@@ -5,17 +5,22 @@ import gurobipy as gp
 from gurobipy import GRB
 import argparse
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.colors import ListedColormap, Normalize
-import heapq
 from tqdm import tqdm
-import signal
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--ship_dataset", type=str, default="tiny", required=False)
-arg = parser.parse_args()
+parser.add_argument("--ship_dataset", "-d", type=str, default="20", required=False)
+parser.add_argument("--time_limit", "-t", type=int, default=600, required=False)
+parser.add_argument("--result_dir", "-o", type=str, default="result", required=False)
+parser.add_argument("--no_solve", "-n", action="store_true", required=False)
+parser.add_argument("--continue_solve", "-c", action="store_true", required=False)
+parser.add_argument("--greedy_total", "-g", type=int, default=100, required=False)
+parser.add_argument("--simple_draft", "-f", action="store_true", required=False)
+parser.add_argument("--tstep", "-s", type=int, default=1, required=False)
+parser.add_argument("--time_threshold", "-r", type=int, default=9999, required=False)
+parser.add_argument("--length_threshold", "-l", type=int, default=0, required=False)
+args = parser.parse_args()
 
-DATA_DIR = "data/"
+DATA_DIR = "../data/"
 PORT_DATA_FILE = osp.join(DATA_DIR, "ports.txt")
 PORT_TINY_DATA_FILE = osp.join(DATA_DIR, "ports-tiny.txt")
 SHIP_DATA_FILES = {
@@ -28,127 +33,170 @@ SHIP_TINY_DATA_FILE = osp.join(DATA_DIR, "ships-tiny.txt")
 
 
 def calD(t, D_0=0, a=2, T=1440):
-    # return D_0 + a * np.sin(2 * np.pi * t / T)
     return D_0 + a * np.sin(2 * np.pi * t / T)
 
 
-_port_free = [[]]
-
-
-def is_valid_port(port, ship, u=None):
-    r = ship["r"]
-    l = ship["l"]
-    d = ship["d"]
-    p = ship["p"]
-    b = port["b"]
-    D = port["D"]
-    if l > b:  # ship length is larger than berth length
-        return False
-    return True
-
-
-def is_valid_free(port_id, ship, u):
-    global _port_free
-    r = ship["r"]
-    l = ship["l"]
-    d = ship["d"]
-    p = ship["p"]
-    for i in range(p):
-        if _port_free[port_id][u + i] == False:
-            return False
-    return True
-
-
-def is_valid(port, ship, u):
-    if not is_valid_port(port, ship, u):
-        return False
-    r = ship["r"]
-    l = ship["l"]
-    d = ship["d"]
-    p = ship["p"]
-    b = port["b"]
-    D = port["D"]
-    for i in range(p):
-        if calD(u + i, D) < d:  # ship draft is larger than water depth
-            return False
-    return True
+def piecewise_linear(x, xp, yp):
+    slopes = np.diff(yp) / np.diff(xp)
+    if x <= xp[0]:
+        return yp[0] + slopes[0] * (x - xp[0])
+    if x >= xp[-1]:
+        return yp[-1] + slopes[-1] * (x - xp[-1])
+    i = np.searchsorted(xp, x) - 1
+    return yp[i] + slopes[i] * (x - xp[i])
 
 
 def greedy_solver(ports: pd.DataFrame, ships: pd.DataFrame, T=1440, a=2):
-    global _port_free
+    max_T = 10000
+    fail_count = 0
+    result_list = []
+    total = args.greedy_total
+    tq = tqdm(total=total)
+    while True:
+        try:
+            result = greedy_solver_it(ports, ships, T, a, max_T=max_T)
+            result_list.append(result)
+            tq.update(1)
+            if len(result_list) > total:
+                r_min = min(result_list, key=lambda x: x["delay_time"].mean())
+                print(r_min.sort_values(by=["port", "start_time"]))
+                print(r_min["delay_time"].mean())
+                return r_min
+        except Exception as e:
+            fail_count += 1
+            if fail_count > 10 and len(result_list) < 1:
+                if max_T > 160000:
+                    raise Exception("fail to find a solution")
+                else:
+                    max_T *= 2
+                    fail_count = 0
+
+
+# D_0 + a * sin( 2 * pi * x / T ) = t { x>=u }
+def first_meet_point(u, t, D_0, a=2, T=1440):
+    t = (t - D_0) / a
+    t = 2 * np.pi * t / T
+    x = np.arcsin(t)
+    # x + 2*pi * (k-1) < u <= x + 2*pi * k
+    k = np.ceil((u - x) / (2 * np.pi))
+    x = x + 2 * np.pi * k
+    return x * T / (2 * np.pi)
+
+
+def greedy_solver_it(
+    ports: pd.DataFrame, ships: pd.DataFrame, T=1440, a=2, max_T=10000
+):
     ships = ships.copy()
     ships = ships.sort_values(by="r")
-    max_T = 10000
-    _port_free = np.ones((len(ports), max_T), dtype=bool)
+    _port_free_list = [[[0, max_T]] for _ in range(len(ports))]
     result_port = []
     result_time = []
-    result_k = []
     result_id = []
 
-    for _, ship in tqdm(ships.iterrows()):
-        count = 0
-        tmp_time = np.full(len(ports), max_T)
+    for _, ship in ships.iterrows():
+        tmp_ans = []
         rand_eps = np.random.randint(0, len(ports))
         for rawI, _ in ports.iterrows():
             i = (rawI + rand_eps) % len(ports)
             port = ports.loc[i]
-            if not is_valid_port(port, ship, None):
+            if port["b"] < ship["l"] or port["D"] + a < ship["d"]:
                 continue
-            for u in range(ship["r"], max_T):
-                if is_valid(port, ship, u) and is_valid_free(i, ship, u):
-                    tmp_time[i] = u
-                    count += 1
-                    break
-            if count >= 2:
+            for node_index in range(len(_port_free_list[i])):
+                list_node = _port_free_list[i][node_index]
+                bg, ed = list_node
+                true_bg = max(bg, ship["r"])
+                if true_bg + ship["p"] > ed:
+                    continue
+                if port["D"] - a < ship["d"]:
+                    true_bg = first_meet_point(true_bg, ship["d"], port["D"], a, T)
+                    true_ed = true_bg + ship["p"]
+                    if true_ed > ed or calD(true_ed, port["D"], a, T) < ship["d"]:
+                        continue
+                    first_min_point = first_meet_point(true_bg, -1, port["D"], a, T)
+                    if first_min_point < true_bg:
+                        continue
+                tmp_ans.append([i, true_bg, node_index])
                 break
-        argmin = np.argmin(tmp_time)
-        result_port.append(argmin)
-        result_time.append(tmp_time[argmin])
-        result_k.append(-1)
+            if len(tmp_ans) > 10:
+                break
+        if len(tmp_ans) < 1:
+            raise Exception("fail to find a solution")
+        min_time = min(tmp_ans, key=lambda x: x[1])
+        port_index = min_time[0]
+        u = min_time[1]
+        node_index = min_time[2]
+        node = _port_free_list[port_index][node_index]
+        bg, ed = node
+        _port_free_list[port_index].pop(node_index)
+
+        if u > bg:
+            _port_free_list[port_index].insert(node_index, [bg, u])
+            node_index += 1
+        if ed > u + ship["p"]:
+            _port_free_list[port_index].insert(node_index, [u + ship["p"], ed])
+            node_index += 1
+        result_port.append(port_index)
+        result_time.append(u)
         result_id.append(ship["id"])
-        for j in range(tmp_time[argmin], tmp_time[argmin] + ship["p"]):
-            _port_free[argmin][j] = False
 
     result = pd.DataFrame(
         {
             "id": result_id,
             "port": result_port,
-            "k": result_k,
             "arrival_time": ships["r"].values,
             "start_time": result_time,
         }
     )
     result["end_time"] = result["start_time"].values + ships["p"].values
     result["delay_time"] = result["start_time"] - result["arrival_time"]
-    for i in range(len(result)):
-        count = 0
-        for j in range(len(result)):
-            if (
-                result.loc[j, "start_time"] < result.loc[i, "start_time"]
-                and result.loc[i, "port"] == result.loc[j, "port"]
-            ):
-                count += 1
-        result.loc[i, "k"] = count
     result["l"] = ships["l"].values
     result["b"] = result["port"].apply(lambda x: ports.loc[x, "b"])
-    tmp_result = result.copy()
-    tmp_result.sort_values(by=["port", "start_time"], inplace=True)
-    print(tmp_result)
-    print(tmp_result["delay_time"].sum())
+    # tmp_result = result.copy()
+    # tmp_result.sort_values(by=["port", "start_time"], inplace=True)
+    # print(tmp_result)
+    # print(tmp_result["delay_time"].mean())
     result.sort_values(by="id", inplace=True)
+    check(ports, ships.sort_values("id").reset_index(), result.reset_index())
     return result
 
 
+def extract_result(x, t, ships):
+    result_port = []
+    result_time = []
+    for i, j in x.keys():
+        if np.isclose(x[i, j], 1):
+            result_port.append(int(j))
+            result_time.append(round(t[i]))
+    result = pd.DataFrame(
+        {
+            "port": result_port,
+            "arrival_time": ships["r"].values,
+            "start_time": result_time,
+        }
+    )
+    result["id"] = ships["id"].values
+    result["delay_time"] = result["start_time"] - result["arrival_time"]
+    tmp_result = result.copy()
+    tmp_result.sort_values(by=["port", "start_time"], inplace=True)
+    print(tmp_result)
+    print("Mean delay:{:.2f}".format(tmp_result["delay_time"].mean()))
+    return result
+
+
+_tmp_obj_result = None
+
+
 def callback(model, where):
-    if where == GRB.Callback.MIP:
-        # 获取当前的最优解
-        obj_val = model.cbGet(GRB.Callback.MIP_OBJBST)
+    global _tmp_obj_result
+    if where == GRB.Callback.MIPSOL:
+        _x = model.cbGetSolution(model._x)
+        _t = model.cbGetSolution(model._t)
+        if not _tmp_obj_result:
+            print("Gurobi: First valid solution found.")
+        _tmp_obj_result = (_x, _t)
 
-        # 输出当前找到的最优解
-        print("当前最优解:", obj_val)
 
-
-def solver(
+def simplex_solver(
     ports: pd.DataFrame,
     ships: pd.DataFrame,
     T=1440,
@@ -156,20 +204,6 @@ def solver(
     output="output.csv",
     greedy_result=None,
 ):
-    """
-    \min \sum_{i \in V}(t_i - r_i) \\
-    \text{s.t.} \\
-    \begin {align} 
-    \sum_{j \in B, k \in O} x_{ijk} = 1, \forall i \in V \\
-    \sum_{i \in V} x_{ijk} \leq 1, \forall j \in B, k \in O \\
-    r_i - t_i \leq 0, \forall i \in V \\
-    \sum_{i \in V} x_{ijk} - \sum_{i \in V} x_{ijk+1} \leq 0, \forall j \in B, k,k+1 \in O \\
-    x_{ijk}x_{ij'k+1}(t_i + p_i - t_{i'}) \leq 0, \forall i, i' \in V, j \in B, k \in O \\
-    x_{ijk}(l_i-b_j) \leq 0, \forall i \in V, j \in B, k \in O \\
-    x_{ijk}(d_i - D_j^{t_i+u}) \leq 0, \forall i \in V, j \in B, k \in O, u \in P_i \\
-    x_{ijk} \in \{0, 1\}, \forall i \in V, j \in B, k \in O \\
-    t_i \geq 0, \forall i \in V
-    """
     r = ships["r"].values
     l = ships["l"].values
     d = ships["d"].values
@@ -178,12 +212,12 @@ def solver(
     D = ports["D"].values
     V = np.arange(len(ships))
     B = np.arange(len(ports))
-    O = V.copy()
-    step = 100
     working_time_max = p.max()
+    M = 1e5
     model = gp.Model("SBSP")
-    x = model.addVars(V, B, O, vtype=GRB.BINARY, name="x")
-    t = model.addVars(V, vtype=GRB.CONTINUOUS, name="t")
+    x = model.addVars(V, B, vtype=GRB.BINARY, name="x")
+    t = model.addVars(V, lb=0, ub=1440 * 25, vtype=GRB.CONTINUOUS, name="t")
+    y = model.addVars(V, V, vtype=GRB.BINARY, name="y")
 
     for x_i in x.values():
         x_i.Start = 0
@@ -195,153 +229,197 @@ def solver(
         for _, row in greedy_result.iterrows():
             i = row["id"] - 1
             j = row["port"]
-            k = row["k"]
-            x[i, j, k].Start = 1
+            x[i, j].Start = 1
             t[i].Start = row["start_time"]
-            x_dict[(i, j, k)] = 1
+            x_dict[(i, j)] = 1
             t_dict[i] = row["start_time"]
 
     model.setObjective(gp.quicksum(t[i] - r[i] for i in V), GRB.MINIMIZE)
     model.addConstrs(
-        (gp.quicksum(x[i, j, k] for j in B for k in O) == 1 for i in V),
+        (gp.quicksum(x[i, j] for j in B) == 1 for i in V),
         name="one_ship_one_port",
     )
-    model.addConstrs(
-        (gp.quicksum(x[i, j, k] for i in V) <= 1 for j in B for k in O),
-        name="one_port_one_ship",
-    )
     model.addConstrs((t[i] >= r[i] for i in V), name="ship_arrive_before_ready")
+
+    mulx = model.addVars(V, V, B, vtype=GRB.BINARY, name="mulx")
+    for i, i_, j in mulx.keys():
+        if i != i_:
+            x1 = x_dict.get((i, j), 0)
+            x2 = x_dict.get((i_, j), 0)
+            mulx[i, i_, j].Start = x1 * x2
+
     model.addConstrs(
         (
-            gp.quicksum(x[i, j, k] for i in V) - gp.quicksum(x[i, j, k + 1] for i in V)
-            >= 0
-            for j in B
-            for k in range(len(O) - 1)
-        ),
-        name="ship_not_overlap",
-    )
-    mulx = model.addVars(V, V, B, O, vtype=GRB.BINARY, name="mulx")
-    for i, i_, j, k in mulx.keys():
-        if i != i_ and k < len(O) - 1:
-            x1 = x_dict.get((i, j, k), 0)
-            x2 = x_dict.get((i_, j, k + 1), 0)
-            mulx[i, i_, j, k].Start = x1 * x2
-    model.addConstrs(
-        (
-            mulx[i, i_, j, k] == x[i, j, k] * x[i_, j, k + 1]
+            mulx[i, i_, j] == x[i, j] * x[i_, j]
             for i in V
-            for i_ in V
+            for i_ in range(i + 1, len(V))
             for j in B
-            for k in range(len(O) - 1)
             if i != i_
         ),
         name="mulx",
     )
+
     model.addConstrs(
         (
-            mulx[i, i_, j, k] * (t[i] + p[i] - t[i_]) <= 0
+            mulx[i, i_, j] * (t[i] + p[i] - t[i_]) <= M * (1 - y[i, i_])
             for i in V
-            for i_ in V
+            for i_ in range(i + 1, len(V))
             for j in B
-            for k in O
-            if i != i_
         ),
         name="ship_not_overlap",
     )
+
     model.addConstrs(
-        (x[i, j, k] * (l[i] - b[j]) <= 0 for i in V for j in B for k in O),
+        (
+            mulx[i, i_, j] * (t[i_] + p[i_] - t[i]) <= M * y[i, i_]
+            for i in V
+            for i_ in range(i + 1, len(V))
+            for j in B
+        ),
+        name="ship_not_overlap",
+    )
+
+    model.addConstrs(
+        (x[i, j] * (l[i] - b[j]) <= 0 for i in V for j in B),
         name="ship_not_exceed_port",
     )
 
-    # phase = model.addVars(
-    #     V,
-    #     range(working_time_max),
-    #     vtype=GRB.CONTINUOUS,
-    #     name="phase",
-    # )
-    # phase_dict = np.empty((len(V), working_time_max), dtype=object)
-    # for i in V:
-    #     for u in range(0, p[i], step):
-    #         temp = 2 * np.pi * (t_dict.get(i, 0) + u) / T
-    #         phase[i, u].Start = temp
-    #         phase_dict[i, u] = temp
+    #### draft constraint ####
 
-    # model.addConstrs(
-    #     (
-    #         phase[i, u] == 2 * np.pi * (t[i] + u) / T
-    #         for i in V
-    #         for u in range(0, p[i], step)
-    #     ),
-    #     name="phase",
-    # )
-
-    # tide = model.addVars(V, range(working_time_max), vtype=GRB.CONTINUOUS, name="tide")
-    # for i in V:
-    #     for u in range(0, p[i], step):
-    #         tide[i, u].Start = np.sin(phase_dict[i, u])
-
-    # for i in V:
-    #     for u in range(0, p[i], step):
-    #         model.addGenConstrSin(
-    #             phase[i, u],
-    #             tide[i, u],
-    #             name="tide",
-    #         )
-
-    # model.addConstrs(
-    #     (
-    #         x[i, j, k] * (d[i] - a * tide[i, u] - D[j]) <= 0
-    #         for i in V
-    #         for j in B
-    #         for k in O
-    #         for u in range(0, p[i], step)
-    #         if D[j] - a <= d[i]
-    #     ),
-    #     name="ship_not_exceed_depth",
-    # )
-
-    # model.setParam("TimeLimit", 60)
-    # model.setParam("MIPGap", 0.2)
-    model.optimize()  # callback=callback
-    # solution
-    print(f"Objective: {model.objVal}")
-    if model.status == GRB.OPTIMAL:
-        result_port = []
-        result_time = []
-        result_k = []
-        for i in V:
-            for j in B:
-                for k in O:
-                    if x[i, j, k].x > 0:
-                        # print(
-                        #     "Ship %d (arrive at %d) at Port %d at Time %d"
-                        #     % (i, r[i], j, t[i].x)
-                        # )
-                        result_port.append(j)
-                        result_time.append(t[i].x)
-                        result_k.append(k)
-        result = pd.DataFrame(
-            {
-                "port": result_port,
-                "k": result_k,
-                "arrival_time": r,
-                "start_time": result_time,
-            }
+    # simple draft constraint
+    if args.simple_draft:
+        model.addConstrs(
+            (x[i, j] == 0 for i in V for j in B if D[j] - a < d[i]),
+            name="ship_not_exceed_depth",
         )
-        result["end_time"] = result["start_time"].values + ships["p"].values
-        result["delay_time"] = result["start_time"] - result["arrival_time"]
-        tmp_result = result.copy()
-        tmp_result.sort_values(by=["port", "start_time"], inplace=True)
-        print(tmp_result)
-        result.to_csv(output, index=False)
-        return result
     else:
-        return None
+        L = args.length_threshold
+
+        phase = model.addVars(
+            V,
+            range(working_time_max),
+            lb=0,
+            ub=50 * np.pi,
+            vtype=GRB.CONTINUOUS,
+            name="phase",
+        )
+
+        phase_dict = np.empty((len(V), working_time_max), dtype=object)
+        for i in V:
+            for u in range(0, p[i]):
+                temp = 2 * np.pi * (t_dict.get(i, 0) + u) / T
+                phase[i, u].Start = temp
+                phase_dict[i, u] = temp
+
+        model.addConstrs(
+            (
+                phase[i, u] == 2 * np.pi * (t[i] + u) / T
+                for i in V
+                for u in range(0, p[i])
+                if l[i] >= L
+            ),
+            name="phase",
+        )
+
+        tide = model.addVars(
+            V, range(working_time_max), lb=-1, ub=1, vtype=GRB.CONTINUOUS, name="tide"
+        )
+
+        for i in V:
+            for u in range(0, p[i]):
+                tide[i, u].Start = np.sin(phase_dict[i, u])
+                # tide[i, u].Start = piecewise_linear(
+                #     phase_dict[i, u],
+                #     np.arange(0, 20 * np.pi, 0.5 * np.pi),
+                #     np.repeat(np.array([0, 1, 0, -np.pi / 2]), 10),
+                # )
+
+        for i in V:
+            if l[i] >= 44:
+                for u in range(0, p[i]):
+                    model.addGenConstrSin(
+                        phase[i, u],
+                        tide[i, u],
+                        name="tide",
+                        options="FuncPieces=1 FuncPieceLength=1.5707963267948966",
+                    )
+                # model.addGenConstrPWL(
+                #     phase[i, u],
+                #     tide[i, u],
+                #     np.arange(0, 20 * np.pi, 0.5 * np.pi),
+                #     np.repeat(np.array([0, 1, 0, -np.pi / 2]), 10),
+                # )
+
+        # original "ship_not_exceed_depth"
+        # model.addConstrs(
+        #     (
+        #         x[i, j] * (d[i] - (D[j] + a * tide[i, u])) <= 0  # tide[i, u]
+        #         for i in V
+        #         for j in B
+        #         for u in range(0, p[i])
+        #         if D[j] - a <= d[i]
+        #     ),
+        #     name="ship_not_exceed_depth",
+        # )
+
+        # approximate "ship_not_exceed_depth"
+        # step = 0.5 * np.pi
+        # tStep = max(1, int(step / (2 * np.pi) * T))
+        tStep = args.tstep
+        step = tStep * 2 * np.pi / T if tStep > 1 else 0
+        threshold = args.time_threshold
+        assert step <= np.pi
+        model.addConstrs(
+            (
+                x[i, j] * (d[i] - (D[j] + a * (tide[i, u] - 2 * np.sin(step / 2))))
+                <= 0  # tide[i, u] <-> -1
+                for i in V
+                for j in B
+                for u in range(0, p[i], tStep)
+                if D[j] - a <= d[i] and p[i] <= threshold and l[i] >= L
+            ),
+            name="ship_not_exceed_depth",
+        )
+
+        model.addConstrs(
+            (
+                x[i, j] == 0
+                for i in V
+                for j in B
+                if D[j] - a < d[i] and (p[i] > threshold or l[i] < L)
+            ),
+            name="ship_not_exceed_depth",
+        )
+
+    #### draft constraint end ####
+
+    model.setParam("TimeLimit", args.time_limit)
+    model.update()
+    model._x = x
+    model._t = t
+    model._y = y
+    model.optimize(callback=callback)
+    print(f"Objective: {model.objVal}")
+
+    if model.status == GRB.OPTIMAL:
+        _x = {id: x[id].x for id in x.keys()}
+        _t = {id: t[id].x for id in t.keys()}
+        result = extract_result(_x, _t, ships)
+    else:
+        if not _tmp_obj_result:
+            print("No feasible solution found.")
+            return None
+        result = extract_result(_tmp_obj_result[0], _tmp_obj_result[1], ships)
+
+    result.to_csv(output, index=False)
+    print(result["delay_time"].mean())
+    return result
 
 
 def check(ports: pd.DataFrame, ships: pd.DataFrame, result: pd.DataFrame, T=1440, a=2):
     port_ship = [[] for _ in range(len(ports))]
     ships = pd.merge(ships, result, left_index=True, right_index=True)
+    ships["end_time"] = ships["start_time"] + ships["p"]
     for i, ship in ships.iterrows():
         port_ship[int(ship["port"])].append(ship)
     port_ship = [sorted(ps, key=lambda x: x["start_time"]) for ps in port_ship]
@@ -349,17 +427,37 @@ def check(ports: pd.DataFrame, ships: pd.DataFrame, result: pd.DataFrame, T=1440
         for j, ship in enumerate(ps):
             if j == 0:
                 continue
-            if ship["start_time"] < ps[j - 1]["start_time"] + ps[j - 1]["p"]:
-                print(f"Port {i} Ship {j} is not feasible")
+            if ship["start_time"] < ps[j - 1]["end_time"]:
+                print(f"overlap")
                 print(ps[j - 1])
                 print(ship)
                 return False
 
+            for u in range(0, ship["p"]):
+                t = ship["start_time"] + u
+                port_id = int(ship["port"])
+                D = ports.loc[port_id, "D"] + a * np.sin(2 * np.pi * t / T)
+                if D + 0.1 < ship["d"]:
+                    print("draft {} > {}".format(ship["d"], D))
+                    print(ports.iloc[port_id])
+                    print(ship)
+                    return False
+    return True
 
-def plot(ports: pd.DataFrame, ships: pd.DataFrame, result: pd.DataFrame, T=1440, a=2):
+
+def plot(
+    ports: pd.DataFrame,
+    ships: pd.DataFrame,
+    result: pd.DataFrame,
+    T=1440,
+    a=2,
+    output="plot.png",
+):
+    if not isinstance(result, pd.DataFrame):
+        return
     maxT = (result["start_time"].values + ships["p"].values).max().astype(int)
     t = np.linspace(0, maxT, maxT)
-    d_list = np.array([d0 + 2 * np.sin(2 * np.pi * t / T) for d0 in ports["D"].values])
+    d_list = np.array([d0 + a * np.sin(2 * np.pi * t / T) for d0 in ports["D"].values])
     rectangle_height = ports["b"].values
     rectangle_y0 = np.cumsum(rectangle_height) - rectangle_height
     rectangle_y1 = np.cumsum(rectangle_height)
@@ -370,10 +468,11 @@ def plot(ports: pd.DataFrame, ships: pd.DataFrame, result: pd.DataFrame, T=1440,
             for d, h in zip(d_list, rectangle_height)
         ]
     )
-    fig, ax = plt.subplots(figsize=(10, 20))
+    fig, ax = plt.subplots(figsize=(10, 14))
     fig.colorbar(
         ax.imshow(
             d_map,
+            cmap="Blues",
         )
     )
     ax.set_yticks(
@@ -383,7 +482,6 @@ def plot(ports: pd.DataFrame, ships: pd.DataFrame, result: pd.DataFrame, T=1440,
     for h in rectangle_y0:
         ax.axhline(h, color="k")
     ax.set_aspect("auto")
-    # ax.fill_between
     st_time = result["start_time"].values
     ed_time = st_time + ships["p"].values
     small_l = ships["l"].values * 0.5
@@ -395,8 +493,39 @@ def plot(ports: pd.DataFrame, ships: pd.DataFrame, result: pd.DataFrame, T=1440,
         ax.fill_between([x0, x1], [y0, y0], [y1, y1], color="gray")
         ax.plot([x0, x0], [y0, y1], color="k", linestyle="--")
         ax.plot([x1, x1], [y0, y1], color="k", linestyle="--")
+    ax.set_xlim(0, maxT)
+    fig.tight_layout()
+    fig.savefig(output)
 
-    fig.savefig("tide.png")
+
+def solver(args):
+    global _tmp_obj_result
+    ports = args.ports
+    ships = args.ships
+    result_output_file = osp.join(args.result_dir, f"output-{args.ship_dataset}.csv")
+    plot_output_file = osp.join(args.result_dir, f"plot-{args.ship_dataset}.png")
+    print(f"Dataset: {args.ship_dataset}")
+    if args.no_solve:
+        result = pd.read_csv(result_output_file)
+    else:
+        if args.continue_solve and osp.exists(result_output_file):
+            greedy_result = pd.read_csv(result_output_file)
+        else:
+            greedy_result = greedy_solver(ports, ships, T=1440, a=2)
+        result = simplex_solver(
+            ports,
+            ships,
+            output=result_output_file,
+            greedy_result=greedy_result,
+        )
+    check(ports, ships, result)
+    plot(
+        ports,
+        ships,
+        result,
+        output=plot_output_file,
+    )
+    _tmp_obj_result = None
 
 
 def main():
@@ -407,29 +536,23 @@ def main():
         k: pd.read_csv(file, header=None, names=["id", "r", "p", "l", "d"])
         for k, file in SHIP_DATA_FILES.items()
     }
-    if arg.ship_dataset == "all":
+    args.ports = ports
+
+    if args.ship_dataset == "all":
         for k, ships in ships_list.items():
-            print(f"Dataset: {k}")
-            solver(ports, ships, T=1440, a=2, output=f"output-{k}.csv")
-    elif arg.ship_dataset == "tiny":
+            args.ship_dataset = k
+            args.ships = ships
+            solver(args)
+    elif args.ship_dataset == "tiny":
         ships = pd.read_csv(
             SHIP_TINY_DATA_FILE, header=None, names=["id", "r", "p", "l", "d"]
         )
-        greedy_result = greedy_solver(ports, ships, T=1440, a=2)
-        solver(
-            ports,
-            ships,
-            T=1440,
-            a=2,
-            output=f"output-tiny.csv",
-            greedy_result=greedy_result,
-        )
+        args.ships = ships
+        solver(args)
     else:
-        ships = ships_list[arg.ship_dataset]
-        # check(ports, ships, pd.read_csv(f"output-{arg.ship_dataset}.csv"))
-        print(f"Dataset: {arg.ship_dataset}")
-        # solver(ports, ships, T=1440, a=2, output=f"output-{arg.ship_dataset}.csv")
-        greedy_solver(ports, ships, T=1440, a=2)
+        ships = ships_list[args.ship_dataset]
+        args.ships = ships
+        solver(args)
 
 
 main()
