@@ -104,22 +104,21 @@ ax_1 \leq y \leq bx_1 \\
 \end{cases}
 $$
 
-From Gurobi 9.0, it has a new function `Model.addGenConstrSin()` that uses piecewise-linear
-approximation to model the sine function. 
+From Gurobi 9.0, it has a new function `Model.addGenConstrSin()` that uses piecewise-linear approximation to model the sine function. 
 
-> Initially, I use it directly in my codes. 
-> 
-> But I found it make the model hard to solve. In a fixed time limit, its result is worse than my own piecewise-linear approximation. But after setting the attributes that control the piecewise-linear approximation, it works as good as my own approximation, and run faster. Great!
->
-> It is worth noting that piecewise-linear functions were also introduced in version 9.0.
+But for this problem, because the depth is an integer, we can use the ladder function to better approximate the sine function, however,  for the first type of model, it will not improve performance, because the step function is still a segmental linear function.
 
-### Approximate solution
+![](./imgs/sin.png)
+
+We will experiment with a new method in the second part, which uses this feature.
+
+### Approximate method for sine function
 
 #### Method 1
 
 In my model, you need to give each step $ u \in [0, p [i]] $ to establish the water depth conditions, which leads to the huge size of the model.
 
-So I tried to introduce a method of seeking secondary solution.I considers a limit per $STEP$, but this restriction will consider the worst case in the next step.
+So I tried to introduce a method of seeking secondary solution.I considers a limit per $STEP$, but this restriction will consider the worst case before the next step.
 
 Use mathematical symbols to be expressed:
 
@@ -191,7 +190,7 @@ In order to unify different datasets, we choose the average waiting time as the 
 
 > greedy solution: 69.0
 
-<img src="plot-20.png" width="400" height="400">
+<img src="imgs/plot-20.png" width="400" height="400">
 
 > Here we also reflect the length of the boat and port (for aesthetic purposes, the display width of the ship has been multiplied by 0.5).
 
@@ -228,16 +227,67 @@ For such a complicated model, the heuristic algorithm can achieve better results
 
 ships20
 
-<img src="plot-20.png" width="400" height="400">
+<img src="imgs/plot-20.png" width="400" height="400">
 
 ships40
 
-<img src="plot-40.png" width="400" height="400">
+<img src="imgs/plot-40.png" width="400" height="400">
 
 ships80
 
-<img src="plot-80.png" width="400" height="400">
+<img src="imgs/plot-80.png" width="400" height="400">
 
 ships160
 
-<img src="plot-160.png" width="400" height="400">
+<img src="imgs/plot-160.png" width="400" height="400">
+
+## A variant of the above Linear programming model
+
+The disadvantage of the above model is that no matter which similar method is adopted, it cannot build a model with a reasonable complexity to find the optimal solution, so we consider some modifications of the model.
+
+Because the working range in the data is at most one cycle, we only need to give each step a number in the figure below (a total of 6 step per cycle)
+
+![](./imgs/sin.png)
+
+Utilize "SOS2 constraints"
+
+$$
+x = \sum_{k=1}^{7} w_k \cdot x_k\\
+\sum_{k=1}^{7} w_k = 1\\
+w_1 \leq z_1\\
+w_2 \leq z_1 + z_2\\
+\cdots\\
+w_6 \leq z_5 + z_6\\
+w_7 \leq z_6\\
+w_k \geq 0\\
+z_k \in \{0, 1\}\\
+
+$$
+
+$x_k = 0, \frac{\pi}{6}, \frac{5\pi}{6}\cdots$
+
+$z_k$ just indicate $x$ on which step.
+
+Building the model for modulus calculation.
+
+$$
+x = q \cdot 2\pi + r\\
+0 \leq r < 2\pi\\
+q \in \mathbb{Z}\\
+$$
+
+In summary, we can get the step at the beginning of work and the step at the end of the work, and whether they spans a cycle ($ o = q_2 -q_1 = 1 $).
+
+Set $ z_k^{(0)} $ indicates that the ladder at the beginning of work is $ k $, $ z_k^{(1)} $ indicates that the ladder at the end is $ k $, $ o $ indicates whether it spans a cycle. A total of $13$ 01-variables.
+
+Set $ f (k_0, k_1, o) $ to indicate the lowest tide in this case.
+
+We can build the lowest tide expression below.
+
+$$
+\text{tide}_{min} = (1-o) \sum_{k_0 \leq k_1} z_{k_0}^{(0)} z_{k_1}^{(1)} f(k_0,k_1,0) + o \sum_{k_0 \geq k_1} z_{k_0}^{(0)} z_{k_1}^{(1)} f(k_0,k_1,1)
+$$
+
+> Because the working time of the ship does not exceed one cycle, if at the same cycle, you can only consider the situation of $ k_0 \leq k_1 $.
+
+Theoretically, the above methods have greatly reduced the size of the model.

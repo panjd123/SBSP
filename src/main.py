@@ -36,6 +36,29 @@ def calD(t, D_0=0, a=2, T=1440):
     return D_0 + a * np.sin(2 * np.pi * t / T)
 
 
+# [x0, x1)
+def get_piecewise_points(to_T=1440, T_num=10, breakpoint_only=False):
+    eps = 1e-8
+    x0 = [0, np.pi / 6, 5 * np.pi / 6, np.pi, 7 * np.pi / 6, 11 * np.pi / 6]
+    x = np.repeat(x0, 2)
+    x[np.arange(0, len(x), 2)] -= eps
+    y0 = [0, 1, 0, -1, -2, -1]
+    y = np.repeat(y0, 2)
+    x = np.tile(x, T_num).reshape(T_num, -1)
+    x_base = np.arange(0, T_num) * 2 * np.pi
+    x = x + x_base.reshape(T_num, 1)
+    x = x.flatten()
+    y = np.tile(y, T_num)
+    x = x[1:]
+    y = y[:-1]
+    if type(to_T) == int:
+        x = x * to_T / (2 * np.pi)
+    if breakpoint_only:
+        return x[::2], y[::2]
+    else:
+        return x, y
+
+
 def piecewise_linear(x, xp, yp):
     slopes = np.diff(yp) / np.diff(xp)
     if x <= xp[0]:
@@ -328,27 +351,29 @@ def simplex_solver(
         for i in V:
             for u in range(0, p[i]):
                 tide[i, u].Start = np.sin(phase_dict[i, u])
-                # tide[i, u].Start = piecewise_linear(
-                #     phase_dict[i, u],
-                #     np.arange(0, 20 * np.pi, 0.5 * np.pi),
-                #     np.repeat(np.array([0, 1, 0, -np.pi / 2]), 10),
-                # )
 
+        xp, yp = get_piecewise_points(None, 15)
         for i in V:
             if l[i] >= 44:
                 for u in range(0, p[i]):
-                    model.addGenConstrSin(
+                    # model.addGenConstrSin(
+                    #     phase[i, u],
+                    #     tide[i, u],
+                    #     name="tide",
+                    #     options="FuncPieces=1 FuncPieceLength=1.5707963267948966",
+                    # )
+                    # model.addGenConstrPWL(
+                    #     phase[i, u],
+                    #     tide[i, u],
+                    #     np.arange(0, 20 * np.pi, 0.5 * np.pi),
+                    #     np.repeat(np.array([0, 1, 0, -np.pi / 2]), 10),
+                    # )
+                    model.addGenConstrPWL(
                         phase[i, u],
                         tide[i, u],
-                        name="tide",
-                        options="FuncPieces=1 FuncPieceLength=1.5707963267948966",
+                        xp,
+                        yp,
                     )
-                # model.addGenConstrPWL(
-                #     phase[i, u],
-                #     tide[i, u],
-                #     np.arange(0, 20 * np.pi, 0.5 * np.pi),
-                #     np.repeat(np.array([0, 1, 0, -np.pi / 2]), 10),
-                # )
 
         # original "ship_not_exceed_depth"
         # model.addConstrs(
@@ -555,4 +580,11 @@ def main():
         solver(args)
 
 
-main()
+# main()
+
+xp, yp = get_piecewise_points(breakpoint_only=True)
+# x = np.linspace(0, 2880, 10000)
+# y = [piecewise_linear(xi, xp, yp) for xi in x]
+# plt.plot(x, y)
+# plt.savefig("test.png")
+print(xp, yp)
