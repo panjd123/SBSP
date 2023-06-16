@@ -99,9 +99,9 @@ def greedy_solver(ports: pd.DataFrame, ships: pd.DataFrame, T=1440, a=2):
             result_list.append(result)
             tq.update(1)
             if len(result_list) > total:
-                r_min = min(result_list, key=lambda x: x["delay_time"].mean())
+                r_min = min(result_list, key=lambda x: x["delay_time"].sum())
                 print(r_min.sort_values(by=["port", "start_time"]))
-                print(r_min["delay_time"].mean())
+                print(r_min["delay_time"].sum())
                 return r_min
         except Exception as e:
             fail_count += 1
@@ -192,10 +192,6 @@ def greedy_solver_it(
     result["delay_time"] = result["start_time"] - result["arrival_time"]
     result["l"] = ships["l"].values
     result["b"] = result["port"].apply(lambda x: ports.loc[x, "b"])
-    # tmp_result = result.copy()
-    # tmp_result.sort_values(by=["port", "start_time"], inplace=True)
-    # print(tmp_result)
-    # print(tmp_result["delay_time"].mean())
     result.sort_values(by="id", inplace=True)
     check(ports, ships.sort_values("id").reset_index(), result.reset_index())
     return result
