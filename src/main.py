@@ -2,7 +2,7 @@ import pandas as pd
 import os.path as osp
 import numpy as np
 import gurobipy as gp
-from gurobipy import GRB
+from gurobipy import GRB, quicksum
 import argparse
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -15,6 +15,7 @@ parser.add_argument("--no_solve", "-n", action="store_true", required=False)
 parser.add_argument("--continue_solve", "-c", action="store_true", required=False)
 parser.add_argument("--greedy_total", "-g", type=int, default=100, required=False)
 parser.add_argument("--simple_draft", "-f", action="store_true", required=False)
+parser.add_argument("--approx_draft", "-a", action="store_true", required=False)
 parser.add_argument("--tstep", "-s", type=int, default=1, required=False)
 parser.add_argument("--time_threshold", "-r", type=int, default=9999, required=False)
 parser.add_argument("--length_threshold", "-l", type=int, default=0, required=False)
@@ -38,7 +39,7 @@ def calD(t, D_0=0, a=2, T=1440):
 
 # [x0, x1)
 def get_piecewise_points(to_T=1440, T_num=10, breakpoint_only=False):
-    eps = 1e-8
+    eps = 1e-5
     x0 = [0, np.pi / 6, 5 * np.pi / 6, np.pi, 7 * np.pi / 6, 11 * np.pi / 6]
     x = np.repeat(x0, 2)
     x[np.arange(0, len(x), 2)] -= eps
@@ -67,6 +68,24 @@ def piecewise_linear(x, xp, yp):
         return yp[-1] + slopes[-1] * (x - xp[-1])
     i = np.searchsorted(xp, x) - 1
     return yp[i] + slopes[i] * (x - xp[i])
+
+
+def get_tide_min():
+    _, y = get_piecewise_points(T_num=2, breakpoint_only=True)
+    tide_min = np.zeros((6, 6, 2))
+    for o in [0, 1]:
+        for i in range(6):
+            for j in range(6):
+                tb = i
+                te = j
+                if o == 1:
+                    te += 6
+                if tb > te:
+                    continue
+                t = np.min(y[tb : te + 1])
+                tide_min[i, j, o] = t
+    print(tide_min)
+    return tide_min
 
 
 def greedy_solver(ports: pd.DataFrame, ships: pd.DataFrame, T=1440, a=2):
@@ -315,7 +334,8 @@ def simplex_solver(
             (x[i, j] == 0 for i in V for j in B if D[j] - a < d[i]),
             name="ship_not_exceed_depth",
         )
-    else:
+    elif args.approx_draft:
+        print("Approximate draft constraint")
         L = args.length_threshold
 
         phase = model.addVars(
@@ -354,53 +374,172 @@ def simplex_solver(
 
         xp, yp = get_piecewise_points(None, 15)
         for i in V:
-            if l[i] >= 44:
+            if l[i] >= L:
                 for u in range(0, p[i]):
-                    # model.addGenConstrSin(
-                    #     phase[i, u],
-                    #     tide[i, u],
-                    #     name="tide",
-                    #     options="FuncPieces=1 FuncPieceLength=1.5707963267948966",
-                    # )
+                    model.addGenConstrSin(
+                        phase[i, u],
+                        tide[i, u]
+                    )
                     # model.addGenConstrPWL(
                     #     phase[i, u],
                     #     tide[i, u],
-                    #     np.arange(0, 20 * np.pi, 0.5 * np.pi),
-                    #     np.repeat(np.array([0, 1, 0, -np.pi / 2]), 10),
+                    #     xp,
+                    #     yp,
                     # )
-                    model.addGenConstrPWL(
-                        phase[i, u],
-                        tide[i, u],
-                        xp,
-                        yp,
-                    )
 
         # original "ship_not_exceed_depth"
+        model.addConstrs(
+            (
+                x[i, j] * (d[i] - (D[j] + a * tide[i, u])) <= 0  # tide[i, u]
+                for i in V
+                for j in B
+                for u in range(0, p[i])
+                if D[j] - a <= d[i]
+            ),
+            name="ship_not_exceed_depth",
+        )
+
+        # approximate "ship_not_exceed_depth"
+        # # step = 0.5 * np.pi
+        # # tStep = max(1, int(step / (2 * np.pi) * T))
+        # tStep = args.tstep
+        # step = tStep * 2 * np.pi / T if tStep > 1 else 0
+        # threshold = args.time_threshold
+        # assert step <= np.pi
         # model.addConstrs(
         #     (
-        #         x[i, j] * (d[i] - (D[j] + a * tide[i, u])) <= 0  # tide[i, u]
+        #         x[i, j] * (d[i] - (D[j] + a * (tide[i, u] - 2 * np.sin(step / 2))))
+        #         <= 0  # tide[i, u] <-> -1
         #         for i in V
         #         for j in B
-        #         for u in range(0, p[i])
-        #         if D[j] - a <= d[i]
+        #         for u in range(0, p[i], tStep)
+        #         if D[j] - a <= d[i] and p[i] <= threshold and l[i] >= L
         #     ),
         #     name="ship_not_exceed_depth",
         # )
 
-        # approximate "ship_not_exceed_depth"
-        # step = 0.5 * np.pi
-        # tStep = max(1, int(step / (2 * np.pi) * T))
-        tStep = args.tstep
-        step = tStep * 2 * np.pi / T if tStep > 1 else 0
-        threshold = args.time_threshold
-        assert step <= np.pi
+        # model.addConstrs(
+        #     (
+        #         x[i, j] == 0
+        #         for i in V
+        #         for j in B
+        #         if D[j] - a < d[i] and (p[i] > threshold or l[i] < L)
+        #     ),
+        #     name="ship_not_exceed_depth",
+        # )
+    elif False:
+        qbg = model.addVars(V, vtype=GRB.INTEGER, name="qbg")
+        qed = model.addVars(V, vtype=GRB.INTEGER, name="qed")
+        rbg = model.addVars(V, lb=0, ub=T, name="rbg")
+        red = model.addVars(V, lb=0, ub=T, name="red")
+        model.addConstrs(
+            (t[i] == qbg[i] * T + rbg[i] for i in V),
+            name="tbg_in_cycle",
+        )
+        model.addConstrs(
+            (t[i] + p[i] == qed[i] * T + red[i] for i in V),
+            name="ted_in_cycle",
+        )
+
+        for i in V:
+            qbg[i].Start = t_dict.get(i, 0) // T
+            rbg[i].Start = t_dict.get(i, 0) % T
+            qed[i].Start = (t_dict.get(i, 0) + p[i]) // T
+            red[i].Start = (t_dict.get(i, 0) + p[i]) % T
+
+        breakpoint, _ = get_piecewise_points(breakpoint_only=True)
+        # SOS2
+        wbg = model.addVars(V, range(7), vtype=GRB.CONTINUOUS, name="wbg")
+        zbg = model.addVars(V, range(6), vtype=GRB.BINARY, name="zbg")
         model.addConstrs(
             (
-                x[i, j] * (d[i] - (D[j] + a * (tide[i, u] - 2 * np.sin(step / 2))))
-                <= 0  # tide[i, u] <-> -1
+                rbg[i] == gp.quicksum(wbg[i, j] * breakpoint[j] for j in range(7))
+                for i in V
+            ),
+            name="rbg",
+        )
+        model.addConstrs(
+            (gp.quicksum(wbg[i, j] for j in range(7)) == 1 for i in V),
+            name="wbg_one",
+        )
+        model.addConstrs(
+            (
+                wbg[i, j]
+                <= (zbg[i, j - 1] if j >= 1 else 0) + (zbg[i, j] if j < 6 else 0)
+                for i in V
+                for j in range(7)
+            )
+        )
+        wed = model.addVars(V, range(7), vtype=GRB.CONTINUOUS, name="wed")
+        zed = model.addVars(V, range(6), vtype=GRB.BINARY, name="zed")
+        model.addConstrs(
+            (
+                red[i] == gp.quicksum(wed[i, j] * breakpoint[j] for j in range(7))
+                for i in V
+            ),
+            name="red",
+        )
+        model.addConstrs(
+            (gp.quicksum(wed[i, j] for j in range(7)) == 1 for i in V),
+            name="wed_one",
+        )
+        model.addConstrs(
+            (
+                wed[i, j]
+                <= (zed[i, j - 1] if j >= 1 else 0) + (zed[i, j] if j < 6 else 0)
+                for i in V
+                for j in range(7)
+            )
+        )
+        o = model.addVars(
+            V,
+            vtype=GRB.BINARY,
+            name="o",
+        )
+        model.addConstrs(
+            (o[i] == qed[i] - qbg[i] for i in V),
+            name="o",
+        )
+        tide_min = model.addVars(V, lb=-2, ub=1)
+        tide_min0 = model.addVars(V, lb=-2, ub=1)
+        tide_min1 = model.addVars(V, lb=-2, ub=1)
+        f = get_tide_min()
+        model.addConstrs(
+            (
+                tide_min0[i]
+                == quicksum(
+                    zbg[i, j] * zed[i, k] * f[j, k, 0]
+                    for j in range(6)
+                    for k in range(6)
+                    if j <= k
+                )
+                for i in V
+            )
+        )
+        model.addConstrs(
+            (
+                tide_min1[i]
+                == quicksum(
+                    zbg[i, j] * zed[i, k] * f[j, k, 1]
+                    for j in range(6)
+                    for k in range(6)
+                    if j >= k
+                )
+                for i in V
+            )
+        )
+        model.addConstrs(
+            (tide_min[i] == tide_min0[i] * (1 - o[i]) + tide_min1[i] * o[i] for i in V)
+        )
+
+        threshold = args.time_threshold
+        L = args.length_threshold
+
+        model.addConstrs(
+            (
+                x[i, j] * (d[i] - (D[j] + a * tide_min[i])) <= 0
                 for i in V
                 for j in B
-                for u in range(0, p[i], tStep)
                 if D[j] - a <= d[i] and p[i] <= threshold and l[i] >= L
             ),
             name="ship_not_exceed_depth",
@@ -580,11 +719,12 @@ def main():
         solver(args)
 
 
-# main()
+main()
 
-xp, yp = get_piecewise_points(breakpoint_only=True)
+# xp, yp = get_piecewise_points(breakpoint_only=True)
 # x = np.linspace(0, 2880, 10000)
 # y = [piecewise_linear(xi, xp, yp) for xi in x]
 # plt.plot(x, y)
 # plt.savefig("test.png")
-print(xp, yp)
+# print(xp, yp)
+# print(get_tide_min())
