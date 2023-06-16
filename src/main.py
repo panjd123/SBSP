@@ -220,7 +220,7 @@ def extract_result(x, t, ships):
     tmp_result = result.copy()
     tmp_result.sort_values(by=["port", "start_time"], inplace=True)
     print(tmp_result)
-    print("Mean delay:{:.2f}".format(tmp_result["delay_time"].mean()))
+    print("Sum delay:{:.2f}".format(tmp_result["delay_time"].sum()))
     return result
 
 
@@ -260,13 +260,8 @@ def simplex_solver(
     t = model.addVars(V, lb=0, ub=1440 * 25, vtype=GRB.CONTINUOUS, name="t")
     y = model.addVars(V, V, vtype=GRB.BINARY, name="y")
 
-    for x_i in x.values():
-        x_i.Start = 0
-
     x_dict = {}
     t_dict = {}
-
-    ship_port = {}
 
     if isinstance(greedy_result, pd.DataFrame):
         for _, row in greedy_result.iterrows():
@@ -276,8 +271,6 @@ def simplex_solver(
             t[i].Start = row["start_time"]
             x_dict[(i, j)] = 1
             t_dict[i] = row["start_time"]
-            # print("ship {} start at port {} at time {}".format(i, j, row["start_time"]))
-            ship_port[i] = j
 
     model.setObjective(gp.quicksum(t[i] - r[i] for i in V), GRB.MINIMIZE)
     model.addConstrs(
@@ -442,12 +435,6 @@ def simplex_solver(
             name="ted_in_cycle",
         )
 
-        for i in V:
-            qbg[i].Start = t_dict.get(i) // T
-            rbg[i].Start = t_dict.get(i) % T
-            qed[i].Start = (t_dict.get(i) + p[i]) // T
-            red[i].Start = (t_dict.get(i) + p[i]) % T
-
         breakpoint, _ = get_piecewise_points(breakpoint_only=True)
         # SOS2
         wbg = model.addVars(V, range(7), vtype=GRB.CONTINUOUS, name="wbg")
@@ -542,55 +529,6 @@ def simplex_solver(
             (tide_min[i] == tide_min0[i] * (1 - o[i]) + tide_min1[i] * o[i] for i in V)
         )
 
-        # Start
-        for i in V:
-            t_bg = t_dict.get(i, 0) % T
-            t_ed = (t_dict.get(i, 0) + p[i]) % T
-            k0 = 0
-            k1 = 0
-            for j in range(6):
-                if breakpoint[j] <= t_bg < breakpoint[j + 1]:
-                    zbg[i, j].Start = 1
-                    k0 = j
-                    p1 = (breakpoint[j + 1] - t_bg) / (
-                        breakpoint[j + 1] - breakpoint[j]
-                    )
-                    p2 = 1 - p1
-                    wbg[i, j].Start = p1
-                    wbg[i, j + 1].Start = p2
-                    for k in range(7):
-                        if k == j or k == j + 1:
-                            continue
-                        else:
-                            wbg[i, k].Start = 0
-                else:
-                    zbg[i, j].Start = 0
-
-                if breakpoint[j] <= t_ed < breakpoint[j + 1]:
-                    k1 = j
-                    zed[i, j].Start = 1
-                    p1 = (breakpoint[j + 1] - t_ed) / (
-                        breakpoint[j + 1] - breakpoint[j]
-                    )
-                    p2 = 1 - p1
-                    wed[i, j].Start = p1
-                    wed[i, j + 1].Start = p2
-                    for k in range(7):
-                        if k == j or k == j + 1:
-                            continue
-                        else:
-                            wed[i, k].Start = 0
-                else:
-                    zed[i, j].Start = 0
-
-            o_s = (t_dict.get(i, 0) + p[i]) // T - t_dict.get(i, 0) // T
-            o[i].Start = o_s
-            tide_min0[i].Start = f[k0, k1, 0]
-            tide_min1[i].Start = f[k0, k1, 1]
-            tide_min[i].Start = f[k0, k1, 0] * (1 - o_s) + f[k0, k1, 1] * o_s
-            tide_s = f[k0, k1, 0] * (1 - o_s) + f[k0, k1, 1] * o_s
-            assert d[i] - (D[ship_port[i]] + tide_s) <= 0
-
         threshold = args.time_threshold
         L = args.length_threshold
 
@@ -635,7 +573,7 @@ def simplex_solver(
         result = extract_result(_tmp_obj_result[0], _tmp_obj_result[1], ships)
 
     result.to_csv(output, index=False)
-    print(result["delay_time"].mean())
+    print("Sum delay:", result["delay_time"].sum())
     return result
 
 
