@@ -104,13 +104,15 @@ ax_1 \leq y \leq bx_1 \\
 \end{cases}
 $$
 
-From Gurobi 9.0, it has a new function `Model.addGenConstrSin()` that uses piecewise-linear approximation to model the sine function. 
+We can use the piecewise linear function to approximate the sine function like this:
 
-But for this problem, because the depth is an integer, we can use the ladder function to better approximate the sine function, however,  for the first type of model, it will not improve performance, because the step function is still a segmental linear function.
+![](./imgs/sin0.png)
+
+But for this problem, because the depth is an integer, we can use the ladder function to better approximate the sine function.
 
 ![](./imgs/sin.png)
 
-We will experiment with a new method in the second part, which uses this feature.
+We will experiment with a new method in the second part, which uses this way to deal with sine function.
 
 ### Approximate method for sine function
 
@@ -163,85 +165,7 @@ For the data of 160 ships, it only takes 1 second to get a feasible solution.
 
 Experiments show that the initial solution obtained by this method is far better than the initial solution obtained by Gurobi itself.
 
-### Experiment results
-
-| dataset | total waiting time |
-| ------- | ----------------- |
-| ships20 | 886 |
-| ships40 | 14100 |
-| ships80 | 39740 |
-| ships160 | 331950 |
-
-You can find detailed results in the `opt-result` folder.
-
-> Because the water level changes are calculated with discrete values, there will be some error in the results.
-
-#### ships20
-
-This data is small enough, so we can get the optimal solution in a short time (105s). Here, we show the results of method 1,2 and 3.
-
-In order to unify different datasets, we choose the average waiting time as the evaluation indicator.
-
-| thresh | step | optimal solution | time cost (s) |
-| ------ | ---- |---------------- | ---- |
-| 0 (method 2 for all) | - | 55.0 | 1 |
-| 600  |60 | 50.45 | 25 |
-| $\infty$ (method 1 for all) |1| **44.3** | 32 |
-
-> greedy solution: 69.0
-
-<img src="imgs/plot-20.png" width="400" height="400">
-
-> Here we also reflect the length of the boat and port (for aesthetic purposes, the display width of the ship has been multiplied by 0.5).
-
-#### ships40, ships80, ships160
-
-When the data is large, the model is difficult for simplex to solve. In my experiment, I can only get
-meaningful results when use method 2 for all ships. (that is $d_i < D_j^{0} - a$)
-
-> I have no idea why gurobi can't improve the initial solution at all when use method 1.
-
-| dataset | greedy solution | sub-optimal solution | gap | time limit (s) |
-| ------ | ---- |---------------- | ---- | ---- |
-| ships40 |  480.0 |  352.5 | 18.8% | 3600 |
-| ships80 |  732.3 |  496.8 | 64.0% | 7200 |
-| ships160 |  2792.1 |  2074.7 | 59.4% | 10800 |
-
-> The visualization results of these three datasets can be found in the appendix.
-
-### Further discussion
-
-#### How to improve the model?
-
-According to the above experimental results, the "short board" is the large ship that requires 48+ length of the port. 
-
-A simple idea that we can apply method 1 only to these long and time-consuming ships.
-
-But after trying, I found that it didn't work. Better greedy algorithm that considers the low tide also didn't work. This may be because the large ships tend to need more time to working, so most of the time, they will encounter the low tide.
-
-#### Heuristic algorithm
-
-For such a complicated model, the heuristic algorithm can achieve better results in more cases, but the timing of this project is chapter of linear programming in the course, so this project mainly focuses on linear programming models.
-
-## Appendix
-
-ships20
-
-<img src="imgs/plot-20.png" width="400" height="400">
-
-ships40
-
-<img src="imgs/plot-40.png" width="400" height="400">
-
-ships80
-
-<img src="imgs/plot-80.png" width="400" height="400">
-
-ships160
-
-<img src="imgs/plot-160.png" width="400" height="400">
-
-## A variant of the above Linear programming model
+### A variant of the above Linear programming model
 
 The disadvantage of the above model is that no matter which similar method is adopted, it cannot build a model with a reasonable complexity to find the optimal solution, so we consider some modifications of the model.
 
@@ -254,6 +178,7 @@ Utilize "SOS2 constraints"
 $$
 x = \sum_{k=1}^{7} w_k \cdot x_k\\
 \sum_{k=1}^{7} w_k = 1\\
+\sum_{k=1}^6 z_k = 1\\
 w_1 \leq z_1\\
 w_2 \leq z_1 + z_2\\
 \cdots\\
@@ -291,3 +216,99 @@ $$
 > Because the working time of the ship does not exceed one cycle, if at the same cycle, you can only consider the situation of $ k_0 \leq k_1 $.
 
 Theoretically, the above methods have greatly reduced the size of the model.
+
+### Experiment results
+
+| dataset | greedy algorithm | original model | variant model |
+| ------- | ----------------- | -------------- | ------------- |
+| ships20 | 1380 | 950 | 950 |
+| ships40 | 19200 | 14100 | 9270 |
+| ships80 | 58584 | 39740 | 34190 |
+| ships160 | 446736 | 331950 | 0 |
+
+#### Original model
+
+Before we talk about the variant model, let's see the results of the original model.
+
+You can find detailed results in the `opt-approx-result` folder.
+
+##### ships20
+
+This data is small enough, so we can get the optimal solution in a short time (500s). Here, we show the results of method 1,2 and 3.
+
+In order to unify different datasets, we choose the average waiting time as the evaluation indicator.
+
+| thresh | step | optimal solution | time cost (s) |
+| ------ | ---- |---------------- | ---- |
+| 0 (approx method 2 for all) | - | 55.0 | 5 |
+| $\infty$ (approx method 1 for all) |1| **47.5** | 500 |
+
+> greedy solution: 69.0
+
+<img src="imgs/plot-20.png" width="400" height="400">
+
+> Here we also reflect the length of the boat and port (for aesthetic purposes, the display width of the ship has been multiplied by 0.5).
+
+##### ships40, ships80, ships160
+
+When the data is large, the model is difficult for simplex to solve. In my experiment, I can only get
+meaningful results when use method 2 for all ships. (that is $d_i < D_j^{0} - a$)
+
+> I have no idea why gurobi can't improve the initial solution at all when use method 1.
+
+| dataset | greedy solution | sub-optimal solution | gap | time limit (s) |
+| ------ | ---- |---------------- | ---- | ---- |
+| ships40 |  480.0 |  352.5 | 18.8% | 3600 |
+| ships80 |  732.3 |  496.8 | 64.0% | 7200 |
+| ships160 |  2792.1 |  2074.7 | 59.4% | 10800 |
+
+> The visualization results of these three datasets can be found in the appendix.
+
+#### Variant model
+
+The variant model can get much better results than the original model. For example, it need only few seconds to get the optimal solution for ships20, which need 500s for the original model.
+
+| dataset | original model | variant model | gap | time cost (s) | improved |
+| ------- | -------------- | ------------- | --- | ------------- | -------- |
+| ships20 | **47.50** | **47.50** | 0% | 5 | 0% |
+| ships40 | 352.50 | **231.75** | 36.5% | 3600 | 34.3% |
+| ships80 | 496.80 | **480.00** | 3.4% | 7200 |
+| ships160 | 2074.70 | **2074.70** | 0% | 10800 |
+
+### Further discussion
+
+#### How to improve the model?
+
+According to the above experimental results, the "short board" is the large ship that requires 48+ length of the port. 
+
+A simple idea that we can apply method 1 only to these long and time-consuming ships.
+
+But after trying, I found that it didn't work. Better greedy algorithm that considers the low tide also didn't work. This may be because the large ships tend to need more time to working, so most of the time, they will encounter the low tide.
+
+#### Heuristic algorithm
+
+For such a complicated model, the heuristic algorithm can achieve better results in more cases, but the timing of this project is chapter of linear programming in the course, so this project mainly focuses on linear programming models.
+
+## Appendix
+
+### ships20
+
+<img src="imgs/var/plot-20.png" width="400" height="400">
+
+### ships40 
+
+#### variant model
+
+<img src="imgs/var/plot-40.png" width="400" height="400">
+
+#### original model
+
+<img src="imgs/ori/plot-40.png" width="400" height="400">
+
+ships80
+
+<img src="imgs/ori/plot-80.png" width="400" height="400">
+
+ships160
+
+<img src="imgs/ori/plot-160.png" width="400" height="400">

@@ -72,7 +72,7 @@ def piecewise_linear(x, xp, yp):
 
 def get_tide_min():
     _, y = get_piecewise_points(T_num=2, breakpoint_only=True)
-    tide_min = np.zeros((6, 6, 2))
+    tide_min = np.full((6, 6, 2), 100)
     for o in [0, 1]:
         for i in range(6):
             for j in range(6):
@@ -84,7 +84,6 @@ def get_tide_min():
                     continue
                 t = np.min(y[tb : te + 1])
                 tide_min[i, j, o] = t
-    print(tide_min)
     return tide_min
 
 
@@ -267,6 +266,8 @@ def simplex_solver(
     x_dict = {}
     t_dict = {}
 
+    ship_port = {}
+
     if isinstance(greedy_result, pd.DataFrame):
         for _, row in greedy_result.iterrows():
             i = row["id"] - 1
@@ -275,6 +276,8 @@ def simplex_solver(
             t[i].Start = row["start_time"]
             x_dict[(i, j)] = 1
             t_dict[i] = row["start_time"]
+            # print("ship {} start at port {} at time {}".format(i, j, row["start_time"]))
+            ship_port[i] = j
 
     model.setObjective(gp.quicksum(t[i] - r[i] for i in V), GRB.MINIMIZE)
     model.addConstrs(
@@ -335,7 +338,6 @@ def simplex_solver(
             name="ship_not_exceed_depth",
         )
     elif args.approx_draft:
-        print("Approximate draft constraint")
         L = args.length_threshold
 
         phase = model.addVars(
@@ -365,27 +367,27 @@ def simplex_solver(
         )
 
         tide = model.addVars(
-            V, range(working_time_max), lb=-1, ub=1, vtype=GRB.CONTINUOUS, name="tide"
+            V, range(working_time_max), lb=-2, ub=2, vtype=GRB.CONTINUOUS, name="tide"
+        )
+
+        xp, yp = get_piecewise_points(None, 15)
+        xp, yp = np.arange(0, 20 * np.pi, 0.5 * np.pi), np.tile(
+            np.array([0, 1, 0, -np.pi / 2]), 10
         )
 
         for i in V:
             for u in range(0, p[i]):
-                tide[i, u].Start = np.sin(phase_dict[i, u])
+                tide[i, u].Start = piecewise_linear(phase_dict[i, u], xp, yp)
 
-        xp, yp = get_piecewise_points(None, 15)
         for i in V:
             if l[i] >= L:
                 for u in range(0, p[i]):
-                    model.addGenConstrSin(
+                    model.addGenConstrPWL(
                         phase[i, u],
-                        tide[i, u]
+                        tide[i, u],
+                        xp,
+                        yp,
                     )
-                    # model.addGenConstrPWL(
-                    #     phase[i, u],
-                    #     tide[i, u],
-                    #     xp,
-                    #     yp,
-                    # )
 
         # original "ship_not_exceed_depth"
         model.addConstrs(
@@ -398,7 +400,6 @@ def simplex_solver(
             ),
             name="ship_not_exceed_depth",
         )
-
         # approximate "ship_not_exceed_depth"
         # # step = 0.5 * np.pi
         # # tStep = max(1, int(step / (2 * np.pi) * T))
@@ -427,7 +428,7 @@ def simplex_solver(
         #     ),
         #     name="ship_not_exceed_depth",
         # )
-    elif False:
+    else:
         qbg = model.addVars(V, vtype=GRB.INTEGER, name="qbg")
         qed = model.addVars(V, vtype=GRB.INTEGER, name="qed")
         rbg = model.addVars(V, lb=0, ub=T, name="rbg")
@@ -442,10 +443,10 @@ def simplex_solver(
         )
 
         for i in V:
-            qbg[i].Start = t_dict.get(i, 0) // T
-            rbg[i].Start = t_dict.get(i, 0) % T
-            qed[i].Start = (t_dict.get(i, 0) + p[i]) // T
-            red[i].Start = (t_dict.get(i, 0) + p[i]) % T
+            qbg[i].Start = t_dict.get(i) // T
+            rbg[i].Start = t_dict.get(i) % T
+            qed[i].Start = (t_dict.get(i) + p[i]) // T
+            red[i].Start = (t_dict.get(i) + p[i]) % T
 
         breakpoint, _ = get_piecewise_points(breakpoint_only=True)
         # SOS2
@@ -461,6 +462,10 @@ def simplex_solver(
         model.addConstrs(
             (gp.quicksum(wbg[i, j] for j in range(7)) == 1 for i in V),
             name="wbg_one",
+        )
+        model.addConstrs(
+            (gp.quicksum(zbg[i, j] for j in range(6)) == 1 for i in V),
+            name="zbg_one",
         )
         model.addConstrs(
             (
@@ -484,6 +489,10 @@ def simplex_solver(
             name="wed_one",
         )
         model.addConstrs(
+            (gp.quicksum(zed[i, j] for j in range(6)) == 1 for i in V),
+            name="zed_one",
+        )
+        model.addConstrs(
             (
                 wed[i, j]
                 <= (zed[i, j - 1] if j >= 1 else 0) + (zed[i, j] if j < 6 else 0)
@@ -500,6 +509,7 @@ def simplex_solver(
             (o[i] == qed[i] - qbg[i] for i in V),
             name="o",
         )
+
         tide_min = model.addVars(V, lb=-2, ub=1)
         tide_min0 = model.addVars(V, lb=-2, ub=1)
         tide_min1 = model.addVars(V, lb=-2, ub=1)
@@ -532,12 +542,61 @@ def simplex_solver(
             (tide_min[i] == tide_min0[i] * (1 - o[i]) + tide_min1[i] * o[i] for i in V)
         )
 
+        # Start
+        for i in V:
+            t_bg = t_dict.get(i, 0) % T
+            t_ed = (t_dict.get(i, 0) + p[i]) % T
+            k0 = 0
+            k1 = 0
+            for j in range(6):
+                if breakpoint[j] <= t_bg < breakpoint[j + 1]:
+                    zbg[i, j].Start = 1
+                    k0 = j
+                    p1 = (breakpoint[j + 1] - t_bg) / (
+                        breakpoint[j + 1] - breakpoint[j]
+                    )
+                    p2 = 1 - p1
+                    wbg[i, j].Start = p1
+                    wbg[i, j + 1].Start = p2
+                    for k in range(7):
+                        if k == j or k == j + 1:
+                            continue
+                        else:
+                            wbg[i, k].Start = 0
+                else:
+                    zbg[i, j].Start = 0
+
+                if breakpoint[j] <= t_ed < breakpoint[j + 1]:
+                    k1 = j
+                    zed[i, j].Start = 1
+                    p1 = (breakpoint[j + 1] - t_ed) / (
+                        breakpoint[j + 1] - breakpoint[j]
+                    )
+                    p2 = 1 - p1
+                    wed[i, j].Start = p1
+                    wed[i, j + 1].Start = p2
+                    for k in range(7):
+                        if k == j or k == j + 1:
+                            continue
+                        else:
+                            wed[i, k].Start = 0
+                else:
+                    zed[i, j].Start = 0
+
+            o_s = (t_dict.get(i, 0) + p[i]) // T - t_dict.get(i, 0) // T
+            o[i].Start = o_s
+            tide_min0[i].Start = f[k0, k1, 0]
+            tide_min1[i].Start = f[k0, k1, 1]
+            tide_min[i].Start = f[k0, k1, 0] * (1 - o_s) + f[k0, k1, 1] * o_s
+            tide_s = f[k0, k1, 0] * (1 - o_s) + f[k0, k1, 1] * o_s
+            assert d[i] - (D[ship_port[i]] + tide_s) <= 0
+
         threshold = args.time_threshold
         L = args.length_threshold
 
         model.addConstrs(
             (
-                x[i, j] * (d[i] - (D[j] + a * tide_min[i])) <= 0
+                x[i, j] * (d[i] - (D[j] + tide_min[i])) <= 0
                 for i in V
                 for j in B
                 if D[j] - a <= d[i] and p[i] <= threshold and l[i] >= L
@@ -589,9 +648,7 @@ def check(ports: pd.DataFrame, ships: pd.DataFrame, result: pd.DataFrame, T=1440
     port_ship = [sorted(ps, key=lambda x: x["start_time"]) for ps in port_ship]
     for i, ps in enumerate(port_ship):
         for j, ship in enumerate(ps):
-            if j == 0:
-                continue
-            if ship["start_time"] < ps[j - 1]["end_time"]:
+            if j >= 1 and ship["start_time"] < ps[j - 1]["end_time"]:
                 print(f"overlap")
                 print(ps[j - 1])
                 print(ship)
@@ -720,11 +777,3 @@ def main():
 
 
 main()
-
-# xp, yp = get_piecewise_points(breakpoint_only=True)
-# x = np.linspace(0, 2880, 10000)
-# y = [piecewise_linear(xi, xp, yp) for xi in x]
-# plt.plot(x, y)
-# plt.savefig("test.png")
-# print(xp, yp)
-# print(get_tide_min())
