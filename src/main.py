@@ -592,7 +592,7 @@ def check(ports: pd.DataFrame, ships: pd.DataFrame, result: pd.DataFrame, T=1440
                 t = ship["start_time"] + u
                 port_id = int(ship["port"])
                 D = ports.loc[port_id, "D"] + a * np.sin(2 * np.pi * t / T)
-                if D + 0.1 < ship["d"]:
+                if D + 0.001 < ship["d"]:
                     print("draft {} > {}".format(ship["d"], D))
                     print(ports.iloc[port_id])
                     print(ship)

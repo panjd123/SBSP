@@ -103,25 +103,29 @@ ax_1 \leq y \leq bx_1 \\
 \end{cases}
 $$
 
+#### piecewise sine
+
 We can use the piecewise linear function to approximate the sine function like this:
 
 ![](./imgs/sin0.png)
+
+#### step sine
 
 But for this problem, because the depth is an integer, we can use the ladder function to better approximate the sine function.
 
 ![](./imgs/sin.png)
 
-At the end of the report, we will introduce the modeling method corresponding to this curve. We call it a "variant model", and the thinking of this part is not the same, and it has better results.
+At the end of the report, we will introduce the modeling method corresponding to this curve. We call it a "variant model", and the idea is not the same, and it has better performance.
 
-Below we first introduce modeling skills based on the continuous sine function.
+Below we first introduce modeling skills based on the piecewise sine.
 
-### Approximate method for sine function
+### Further discussion about "piecewise sine"
+
+In my model, you need to give each step $ u \in [0, p [i]] $ to establish the water depth conditions, which leads to the huge size of the model. These are some optimization methods I have adopted.
 
 #### Method 1
 
-In my model, you need to give each step $ u \in [0, p [i]] $ to establish the water depth conditions, which leads to the huge size of the model.
-
-So I tried to introduce a method of seeking secondary solution.I considers a limit per $STEP$, but this restriction will consider the worst case before the next step.
+I tried to introduce a method of seeking secondary solution.I considers a limit per $STEP$, but this restriction will consider the worst case before the next step.
 
 Use mathematical symbols to be expressed:
 
@@ -135,8 +139,7 @@ For example, taking $ S = 200 $, then each ship needs to consider about $1$ to $
 
 #### Method 2
 
-Another method is just to consider the worst case, that is $D_j^{0} - a$, 
-in most cases, it can also get a good solution in a short time.
+Another method is just to consider the worst case, that is $D_j^{0} - a$, in most cases, it can also get a good solution in a short time.
 
 #### Method 3
 
@@ -166,7 +169,7 @@ For the data of 160 ships, it only takes 1 second to get a feasible solution.
 
 Experiments show that the initial solution obtained by this method is far better than the initial solution obtained by Gurobi itself.
 
-### A variant of the above Linear programming model
+### A variant of the above Linear programming model: using step sine
 
 The disadvantage of the above model is that no matter which similar method is adopted, it cannot build a model with a reasonable complexity to find the optimal solution, so we consider some modifications of the model.
 
@@ -187,7 +190,6 @@ w_5 \leq z_4 + z_5\\
 w_6 \leq z_5\\
 w_k \geq 0\\
 z_k \in \{0, 1\}\\
-
 $$
 
 $x_k = 0, \frac{\pi}{6}, \frac{5\pi}{6}\cdots$
@@ -206,7 +208,7 @@ In summary, we can get the step where it starts and where it ends, and whether t
 
 Set $ z_k^{(0)} $ indicates that the step where it starts is $k$, and $ z_k^{(1)} $ indicates that the step where it ends.
 
-Set $ f (k_0, k_1, o) $ to indicate the lowest tide in this case.
+Set $ f (k_0, k_1, o) $ to indicate the lowest tide in this case, which is quite easy to calculate in advance.
 
 We can build the lowest tide expression as follows:
 
@@ -216,33 +218,37 @@ $$
 
 > Because the working time of the ship does not exceed one cycle, if at the same cycle, you can only consider the situation of $ k_0 \leq k_1 $.
 
+$$
+x_{ij}(d_i - D_j^{t_i+u}) \leq 0, \forall i \in V, j \in B, u \in P_i \\
+\Rightarrow \\
+x_{ij}[d_i - (D_j^{0} + \text{tide}_{\text{min}}] \leq 0, \forall i \in V, j \in B \\
+$$
+
 Theoretically, the above methods have greatly reduced the size of the model.
 
 ### Experiment results
 
 | dataset | greedy algorithm | original model | variant model |
 | ------- | ----------------- | -------------- | ------------- |
-| ships20 | 1380 | 950 | 950 |
-| ships40 | 19200 | 14100 | 9270 |
-| ships80 | 58584 | 39740 | 32160 |
-| ships160 | 446736 | 331950 | 0 |
+| ships20 | 1380 | **950** | **950** |
+| ships40 | 19200 | 14100 | **9270** |
+| ships80 | 58584 | 39740 | **32160** |
+| ships160 | 446736 | 331950 | **297720** |
 
 #### Original model
 
 Before we talk about the variant model, let's see the results of the original model.
 
-You can find detailed results in the `opt-approx-result` folder.
+You can find detailed results in the [`result/approx/`](../result/approx/) folder.
 
 ##### ships20
 
-This data is small enough, so we can get the optimal solution in a short time (500s). Here, we show the results of method 1,2 and 3.
-
-In order to unify different datasets, we choose the average waiting time as the evaluation indicator.
+This data is small enough, so we can get the optimal solution in a short time (500s). Here, we show the results of method 1 and 2 mentioned in Further discussion about "piecewise sine".
 
 | thresh | step | optimal solution | time cost (s) |
 | ------ | ---- |---------------- | ---- |
-| 0 (approx method 2 for all) | - | 1100 | 5 |
-| $\infty$ (approx method 1 for all) |1| **950** | 500 |
+| 0 (method 2 for all) | - | 1100 | 5 |
+| $\infty$ (method 1 for all) |1| **950** | 500 |
 
 > greedy solution: 1380, improved: 31.1%
 
@@ -273,12 +279,16 @@ The variant model can get much better results than the original model. For examp
 | ------- | -------------- | ------------- | --- | ------------- | -------- |
 | ships20 | **950** | **950** | 0% | 5 | 0% |
 | ships40 | 14100 | **9270** | 36.5% | 3600 | 34.3% |
-| ships80 | 39740 | **32160** | 89.0% | 7200 | 19.1% |
-| ships160 | **331950** | 371770 | 0% | 10800 | -12.0% |
+| ships80 | 39740 | **32160** | 89.0% | 4800 | 19.1% |
+| ships160 | 331950 | **297720** | 96% | 7200 | 10.3% |
+
+You can find detailed results in the [`result/approx/`](../result/opt/) folder.
+
+> The visualization results of these datasets can be found in the appendix.
 
 ### Further discussion
 
-#### How to improve the model?
+#### How to improve the model
 
 According to the above experimental results, the "short board" is the large ship that requires 48+ length of the port. 
 
@@ -306,10 +316,22 @@ For such a complicated model, the heuristic algorithm can achieve better results
 
 <img src="imgs/ori/plot-40.png" width="400" height="400">
 
-ships80
+### ships80
+
+#### variant model
+
+<img src="imgs/var/plot-80.png" width="400" height="400">
+
+#### original model
 
 <img src="imgs/ori/plot-80.png" width="400" height="400">
 
-ships160
+### ships160
+
+#### variant model
+
+<img src="imgs/var/plot-160.png" width="400" height="400">
+
+#### original model
 
 <img src="imgs/ori/plot-160.png" width="400" height="400">
