@@ -2,6 +2,10 @@
 
 潘俊达 2021201626
 
+> Implemented two versions of the problem, one with full time depth constraints and one with constraints only at the time of entry and exit, the latter being referred to as the "two ends" version.
+>
+> The implementation difficulty of the former is higher, and the former can be easily transformed into the latter, and most importantly, the former is much more interestring. Therefore, let's first discuss the problem model of the former.
+
 ## Modeling
 
 | Symbol | Description |
@@ -221,27 +225,43 @@ $$
 $$
 x_{ij}(d_i - D_j^{t_i+u}) \leq 0, \forall i \in V, j \in B, u \in P_i \\
 \Rightarrow \\
-x_{ij}[d_i - (D_j^{0} + \text{tide}_{\text{min}}] \leq 0, \forall i \in V, j \in B \\
+x_{ij}[d_i - (D_j^{0} + \text{tide}_{\text{min}})] \leq 0, \forall i \in V, j \in B \\
 $$
 
 Theoretically, the above methods have greatly reduced the size of the model.
 
+### Twoends version problem
+
+In the above variant model, we have constructed a method to describe the start and end times, so at this point, we just need to add 2 constraints separately, like this:
+
+$$
+\text{tide}_{st} = \sum_{k_0} z_{k_0}^{(0)}f(k_0) \\
+x_{ij}[d_i - (D_j^{0} + \text{tide}_{\text{st}})] \leq 0, \forall i \in V, j \in B \\
+\ \\
+\text{tide}_{ed} = \sum_{k_1} z_{k_1}^{(0)}f(k_1) \\
+x_{ij}[d_i - (D_j^{0} + \text{tide}_{\text{ed}})] \leq 0, \forall i \in V, j \in B
+$$
+
+Essentially, the above process can be seen as manually implementing piecewise linear functions using the SOS2 method.
+
 ### Experiment results
+
+#### Full time version problem
 
 | dataset | greedy algorithm | original model | variant model |
 | ------- | ----------------- | -------------- | ------------- |
 | ships20 | 1380 | **950** | **950** |
 | ships40 | 19200 | 14100 | **9270** |
 | ships80 | 58584 | 39740 | **32160** |
-| ships160 | 446736 | 331950 | **297720** |
+| ships160 | 446736 | 331950 | **281800** |
 
-#### Original model
+##### Original model
 
 Before we talk about the variant model, let's see the results of the original model.
 
 You can find detailed results in the [`result/approx/`](../result/approx/) folder.
 
-##### ships20
+###### ships20
 
 This data is small enough, so we can get the optimal solution in a short time (500s). Here, we show the results of method 1 and 2 mentioned in Further discussion about "piecewise sine".
 
@@ -256,7 +276,7 @@ This data is small enough, so we can get the optimal solution in a short time (5
 
 > Here we also reflect the length of the boat and port (for aesthetic purposes, the display width of the ship has been multiplied by 0.5).
 
-##### ships40, ships80, ships160
+###### ships40, ships80, ships160
 
 When the data is large, the model is difficult for simplex to solve. In my experiment, I can only get
 meaningful results when use method 2 for all ships. (that is $d_i < D_j^{0} - a$)
@@ -271,18 +291,29 @@ meaningful results when use method 2 for all ships. (that is $d_i < D_j^{0} - a$
 
 > The visualization results of these three datasets can be found in the appendix.
 
-#### Variant model
+##### Variant model
 
 The variant model can get much better results than the original model. For example, it need only few seconds to get the optimal solution for ships20, which need 500s for the original model.
 
-| dataset | original model | variant model | gap | time cost (s) | improved |
+| dataset | greedy model | variant model | gap | time cost (s) | improved |
 | ------- | -------------- | ------------- | --- | ------------- | -------- |
-| ships20 | **950** | **950** | 0% | 5 | 0% |
-| ships40 | 14100 | **9270** | 36.5% | 3600 | 34.3% |
-| ships80 | 39740 | **32160** | 89.0% | 4800 | 19.1% |
-| ships160 | 331950 | **297720** | 96% | 7200 | 10.3% |
+| ships20 | 1380 | **950** | 0% | 120 | 0% |
+| ships40 | 19200 | **9270** | 59.8% | 3600 | 78.0% |
+| ships80 | 58584 | **32160** | 89.0% | 4800 | 19.1% |
+| ships160 | 446736 | **281800** | 94.9% | 7200 | 15.1% |
 
 You can find detailed results in the [`result/approx/`](../result/opt/) folder.
+
+> The visualization results of these datasets can be found in the appendix.
+
+#### Two ends version problem
+
+| dataset | greedy algorithm | model | gap | time limit (s) | improved |
+| ------ | ---- |---------------- | ---- | ---- | ---- |
+| ships20 | 1380 |  **950** | 0% | 5 |  |
+| ships40 | 19200 | **4440** | 34.0% | 3600 | 26.5% |
+| ships80 | 58584 | 24430 | 64.0% | 7200 | 32.1% |
+| ships160 | 446736 | 331950 | 59.4% | 10800 | 25.8% |
 
 > The visualization results of these datasets can be found in the appendix.
 
@@ -302,36 +333,56 @@ For such a complicated model, the heuristic algorithm can achieve better results
 
 ## Appendix
 
-### ships20
+### Full time version problem
+
+#### ships20
 
 <img src="imgs/var/plot-20.png" width="400" height="400">
 
-### ships40 
+#### ships40 
 
-#### variant model
+##### variant model
 
 <img src="imgs/var/plot-40.png" width="400" height="400">
 
-#### original model
+##### original model
 
 <img src="imgs/ori/plot-40.png" width="400" height="400">
 
-### ships80
+#### ships80
 
-#### variant model
+##### variant model
 
 <img src="imgs/var/plot-80.png" width="400" height="400">
 
-#### original model
+##### original model
 
 <img src="imgs/ori/plot-80.png" width="400" height="400">
 
-### ships160
+#### ships160
 
-#### variant model
+##### variant model
 
 <img src="imgs/var/plot-160.png" width="400" height="400">
 
-#### original model
+##### original model
 
 <img src="imgs/ori/plot-160.png" width="400" height="400">
+
+### Two ends version problem
+
+#### ships20
+
+<img src="imgs/two/plot-20.png" width="400" height="400">
+
+#### ships40
+
+<img src="imgs/two/plot-40.png" width="400" height="400">
+
+#### ships80
+
+<img src="imgs/two/plot-80.png" width="400" height="400">
+
+#### ships160
+
+<img src="imgs/two/plot-160.png" width="400" height="400">

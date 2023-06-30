@@ -15,7 +15,7 @@ parser.add_argument("--no_solve", "-n", action="store_true", required=False)
 parser.add_argument("--continue_solve", "-c", action="store_true", required=False)
 parser.add_argument("--greedy_total", "-g", type=int, default=100, required=False)
 parser.add_argument("--simple_draft", "-f", action="store_true", required=False)
-parser.add_argument("--approx_draft", "-a", action="store_true", required=False)
+parser.add_argument("--twoends_draft", "-e", action="store_true", required=False)
 parser.add_argument("--tstep", "-s", type=int, default=1, required=False)
 parser.add_argument("--time_threshold", "-r", type=int, default=9999, required=False)
 parser.add_argument("--length_threshold", "-l", type=int, default=0, required=False)
@@ -78,6 +78,8 @@ def get_tide_min():
             for j in range(6):
                 tb = i
                 te = j
+                # tide_min[i, j, o] = min(y[tb], y[te])
+                # continue
                 if o == 1:
                     te += 6
                 if tb > te:
@@ -85,6 +87,11 @@ def get_tide_min():
                 t = np.min(y[tb : te + 1])
                 tide_min[i, j, o] = t
     return tide_min
+
+
+def get_tide():
+    _, y = get_piecewise_points(T_num=1, breakpoint_only=True)
+    return y
 
 
 def greedy_solver(ports: pd.DataFrame, ships: pd.DataFrame, T=1440, a=2):
@@ -326,97 +333,127 @@ def simplex_solver(
             (x[i, j] == 0 for i in V for j in B if D[j] - a < d[i]),
             name="ship_not_exceed_depth",
         )
-    elif args.approx_draft:
+    elif args.twoends_draft:
+        qbg = model.addVars(V, vtype=GRB.INTEGER, name="qbg")
+        qed = model.addVars(V, vtype=GRB.INTEGER, name="qed")
+        rbg = model.addVars(V, lb=0, ub=T, name="rbg")
+        red = model.addVars(V, lb=0, ub=T, name="red")
+        model.addConstrs(
+            (t[i] == qbg[i] * T + rbg[i] for i in V),
+            name="tbg_in_cycle",
+        )
+        model.addConstrs(
+            (t[i] + p[i] == qed[i] * T + red[i] for i in V),
+            name="ted_in_cycle",
+        )
+
+        breakpoint, _ = get_piecewise_points(breakpoint_only=True)
+        # SOS2
+        wbg = model.addVars(V, range(7), vtype=GRB.CONTINUOUS, name="wbg")
+        zbg = model.addVars(V, range(6), vtype=GRB.BINARY, name="zbg")
+        model.addConstrs(
+            (
+                rbg[i] == gp.quicksum(wbg[i, j] * breakpoint[j] for j in range(7))
+                for i in V
+            ),
+            name="rbg",
+        )
+        model.addConstrs(
+            (gp.quicksum(wbg[i, j] for j in range(7)) == 1 for i in V),
+            name="wbg_one",
+        )
+        model.addConstrs(
+            (gp.quicksum(zbg[i, j] for j in range(6)) == 1 for i in V),
+            name="zbg_one",
+        )
+        model.addConstrs(
+            (
+                wbg[i, j]
+                <= (zbg[i, j - 1] if j >= 1 else 0) + (zbg[i, j] if j < 6 else 0)
+                for i in V
+                for j in range(7)
+            )
+        )
+        wed = model.addVars(V, range(7), vtype=GRB.CONTINUOUS, name="wed")
+        zed = model.addVars(V, range(6), vtype=GRB.BINARY, name="zed")
+        model.addConstrs(
+            (
+                red[i] == gp.quicksum(wed[i, j] * breakpoint[j] for j in range(7))
+                for i in V
+            ),
+            name="red",
+        )
+        model.addConstrs(
+            (gp.quicksum(wed[i, j] for j in range(7)) == 1 for i in V),
+            name="wed_one",
+        )
+        model.addConstrs(
+            (gp.quicksum(zed[i, j] for j in range(6)) == 1 for i in V),
+            name="zed_one",
+        )
+        model.addConstrs(
+            (
+                wed[i, j]
+                <= (zed[i, j - 1] if j >= 1 else 0) + (zed[i, j] if j < 6 else 0)
+                for i in V
+                for j in range(7)
+            )
+        )
+
+        tide_min_bg = model.addVars(V, lb=-2, ub=1)
+        tide_min_ed = model.addVars(V, lb=-2, ub=1)
+
+        f = get_tide()
+        print(f)
+
+        model.addConstrs(
+            (
+                tide_min_bg[i] == gp.quicksum(f[j] * zbg[i, j] for j in range(6))
+                for i in V
+            ),
+            name="tide_min_bg",
+        )
+
+        model.addConstrs(
+            (
+                tide_min_ed[i] == gp.quicksum(f[j] * zed[i, j] for j in range(6))
+                for i in V
+            ),
+            name="tide_min_ed",
+        )
+
+        threshold = args.time_threshold
         L = args.length_threshold
 
-        phase = model.addVars(
-            V,
-            range(working_time_max),
-            lb=0,
-            ub=50 * np.pi,
-            vtype=GRB.CONTINUOUS,
-            name="phase",
-        )
-
-        phase_dict = np.empty((len(V), working_time_max), dtype=object)
-        for i in V:
-            for u in range(0, p[i]):
-                temp = 2 * np.pi * (t_dict.get(i, 0) + u) / T
-                phase[i, u].Start = temp
-                phase_dict[i, u] = temp
-
         model.addConstrs(
             (
-                phase[i, u] == 2 * np.pi * (t[i] + u) / T
-                for i in V
-                for u in range(0, p[i])
-                if l[i] >= L
-            ),
-            name="phase",
-        )
-
-        tide = model.addVars(
-            V, range(working_time_max), lb=-2, ub=2, vtype=GRB.CONTINUOUS, name="tide"
-        )
-
-        xp, yp = get_piecewise_points(None, 15)
-        xp, yp = np.arange(0, 20 * np.pi, 0.5 * np.pi), np.tile(
-            np.array([0, 1, 0, -np.pi / 2]), 10
-        )
-
-        for i in V:
-            for u in range(0, p[i]):
-                tide[i, u].Start = piecewise_linear(phase_dict[i, u], xp, yp)
-
-        for i in V:
-            if l[i] >= L:
-                for u in range(0, p[i]):
-                    model.addGenConstrPWL(
-                        phase[i, u],
-                        tide[i, u],
-                        xp,
-                        yp,
-                    )
-
-        # original "ship_not_exceed_depth"
-        model.addConstrs(
-            (
-                x[i, j] * (d[i] - (D[j] + a * tide[i, u])) <= 0  # tide[i, u]
+                x[i, j] * (d[i] - (D[j] + tide_min_bg[i])) <= 0
                 for i in V
                 for j in B
-                for u in range(0, p[i])
-                if D[j] - a <= d[i]
+                if D[j] - a < d[i] and p[i] <= threshold and l[i] >= L
             ),
             name="ship_not_exceed_depth",
         )
-        # approximate "ship_not_exceed_depth"
-        # # step = 0.5 * np.pi
-        # # tStep = max(1, int(step / (2 * np.pi) * T))
-        # tStep = args.tstep
-        # step = tStep * 2 * np.pi / T if tStep > 1 else 0
-        # threshold = args.time_threshold
-        # assert step <= np.pi
-        # model.addConstrs(
-        #     (
-        #         x[i, j] * (d[i] - (D[j] + a * (tide[i, u] - 2 * np.sin(step / 2))))
-        #         <= 0  # tide[i, u] <-> -1
-        #         for i in V
-        #         for j in B
-        #         for u in range(0, p[i], tStep)
-        #         if D[j] - a <= d[i] and p[i] <= threshold and l[i] >= L
-        #     ),
-        #     name="ship_not_exceed_depth",
-        # )
 
-        # model.addConstrs(
-        #     (
-        #         x[i, j] == 0
-        #         for i in V
-        #         for j in B
-        #         if D[j] - a < d[i] and (p[i] > threshold or l[i] < L)
-        #     ),
-        #     name="ship_not_exceed_depth",
-        # )
+        model.addConstrs(
+            (
+                x[i, j] * (d[i] - (D[j] + tide_min_ed[i])) <= 0
+                for i in V
+                for j in B
+                if D[j] - a < d[i] and p[i] <= threshold and l[i] >= L
+            ),
+            name="ship_not_exceed_depth",
+        )
+
+        model.addConstrs(
+            (
+                x[i, j] == 0
+                for i in V
+                for j in B
+                if D[j] - a < d[i] and (p[i] > threshold or l[i] < L)
+            ),
+            name="ship_not_exceed_depth",
+        )
     else:
         qbg = model.addVars(V, vtype=GRB.INTEGER, name="qbg")
         qed = model.addVars(V, vtype=GRB.INTEGER, name="qed")
@@ -533,7 +570,7 @@ def simplex_solver(
                 x[i, j] * (d[i] - (D[j] + tide_min[i])) <= 0
                 for i in V
                 for j in B
-                if D[j] - a <= d[i] and p[i] <= threshold and l[i] >= L
+                if D[j] - a < d[i] and p[i] <= threshold and l[i] >= L
             ),
             name="ship_not_exceed_depth",
         )
@@ -573,7 +610,14 @@ def simplex_solver(
     return result
 
 
-def check(ports: pd.DataFrame, ships: pd.DataFrame, result: pd.DataFrame, T=1440, a=2):
+def check(
+    ports: pd.DataFrame,
+    ships: pd.DataFrame,
+    result: pd.DataFrame,
+    T=1440,
+    a=2,
+    twoends: bool = True,
+):
     port_ship = [[] for _ in range(len(ports))]
     ships = pd.merge(ships, result, left_index=True, right_index=True)
     ships["end_time"] = ships["start_time"] + ships["p"]
@@ -588,10 +632,22 @@ def check(ports: pd.DataFrame, ships: pd.DataFrame, result: pd.DataFrame, T=1440
                 print(ship)
                 return False
 
-            for u in range(0, ship["p"]):
-                t = ship["start_time"] + u
+            if not twoends:
+                for u in range(0, ship["p"]):
+                    t = ship["start_time"] + u
+                    port_id = int(ship["port"])
+                    D = ports.loc[port_id, "D"] + a * np.sin(2 * np.pi * t / T)
+                    if D + 0.001 < ship["d"]:
+                        print("draft {} > {}".format(ship["d"], D))
+                        print(ports.iloc[port_id])
+                        print(ship)
+                        return False
+            else:
                 port_id = int(ship["port"])
+                t = ship["start_time"]
                 D = ports.loc[port_id, "D"] + a * np.sin(2 * np.pi * t / T)
+                t = ship["end_time"]
+                D = min(D, ports.loc[port_id, "D"] + a * np.sin(2 * np.pi * t / T))
                 if D + 0.001 < ship["d"]:
                     print("draft {} > {}".format(ship["d"], D))
                     print(ports.iloc[port_id])
