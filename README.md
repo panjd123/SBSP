@@ -22,15 +22,6 @@ RUC "Operations Research: Modeling and Algorithms 2023" Project
 
 ### Run
 
-Simple test:
-
-```
-cd ./src
-mkdir ./temp
-python main.py --help
-python main.py -d 20 -g 20 -o temp
-```
-
 Reproduce the results in the report:
 
 ```
