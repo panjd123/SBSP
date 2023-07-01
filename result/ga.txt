@@ -1,0 +1,40 @@
+dataset: 20
+population: 1000
+generation: 100
+tournament size: 50
+cross point num: -1
+mutation rate: 0
+thread num: 1
+selection method: tournament
+round: 30
+best fitness: 950
+dataset: 40
+population: 10000
+generation: 100
+tournament size: 50
+cross point num: -1
+mutation rate: 0
+thread num: 1
+selection method: tournament
+round: 100
+best fitness: 4570
+dataset: 80
+population: 20000
+generation: 100
+tournament size: 200
+cross point num: -1
+mutation rate: 0
+thread num: 1
+selection method: tournament
+round: 50
+best fitness: 27430
+dataset: 160
+population: 30000
+generation: 100
+tournament size: 250
+cross point num: -1
+mutation rate: 0
+thread num: 1
+selection method: tournament
+round: 30
+best fitness: 211260

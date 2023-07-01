@@ -3,6 +3,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <numeric>
@@ -255,11 +256,11 @@ void gen_thread(int l,
                 vector<Chromosome>& children,
                 Chromosome& best,
                 vector<Chromosome>& population,
-                function<pair<int, int>()> select,
+                function<pair<int, int>(unsigned int*)> select,
                 unsigned int* seed,
                 mutex& m) {
     for (int i = l; i < r; i++) {
-        auto [parent1, parent2] = select();
+        auto [parent1, parent2] = select(seed);
         children[i] = crossover(population[parent1], population[parent2], seed);
         mutation(children[i], seed);
         children[i].fitness = calc_fitness(children[i]);
@@ -310,23 +311,23 @@ Chromosome genetic(vector<Chromosome>& population) {
             prob[i] = (mx - population[i].fitness) / sum;
             prob[i] += (i == 0 ? 0 : prob[i - 1]);
         }
-        function<pair<int, int>()> select;
+        function<pair<int, int>(unsigned int*)> select;
+
         if (selection_method == SelectionMethod::Roulette) {
             auto roulette_wheel_selection =
-                [&prob]() {
-                    double r1 = (double)rand() / RAND_MAX;
-                    double r2 = (double)rand() / RAND_MAX;
+                [&prob](unsigned int* seed) {
+                    double r1 = (double)rand_r(seed) / RAND_MAX;
+                    double r2 = (double)rand_r(seed) / RAND_MAX;
                     int parent1 = lower_bound(prob.begin(), prob.end(), r1) - prob.begin();
                     int parent2 = lower_bound(prob.begin(), prob.end(), r2) - prob.begin();
                     return make_pair(parent1, parent2);
                 };
             select = roulette_wheel_selection;
         } else if (selection_method == SelectionMethod::Tournament) {
-            // tournament selection
             auto tournament_selection =
-                [&population]() {
-                    int parent1 = rand() % population_size;
-                    int parent2 = rand() % population_size;
+                [&population](unsigned int* seed) {
+                    int parent1 = rand_r(seed) % population_size;
+                    int parent2 = rand_r(seed) % population_size;
                     for (int i = 1; i < tournament_size; i++) {
                         int t = rand() % population_size;
                         if (population[t].fitness < population[parent1].fitness) {
@@ -340,9 +341,8 @@ Chromosome genetic(vector<Chromosome>& population) {
                     return make_pair(parent1, parent2);
                 };
             select = tournament_selection;
-        } else {
-            assert(false);
         }
+
         mutex m;
         vector<thread> pool;
         int step = (population_size + thread_num - 1) / thread_num;
@@ -473,5 +473,16 @@ int main(int argc, char* argv[]) {
         }
     }
     cerr << "best fitness: " << best.fitness << endl;
+
+    cout << "dataset: " << dataset << endl;
+    cout << "population: " << population_size << endl;
+    cout << "generation: " << max_generation << endl;
+    cout << "tournament size: " << tournament_size << endl;
+    cout << "cross point num: " << cross_point_num << endl;
+    cout << "mutation rate: " << mutation_rate << endl;
+    cout << "thread num: " << thread_num << endl;
+    cout << "selection method: " << ((selection_method == SelectionMethod::Tournament) ? "tournament" : "roulette") << endl;
+    cout << "round: " << round_num << endl;
+    cout << "best fitness: " << best.fitness << endl;
     output(best, output_path);
 }

@@ -35,7 +35,8 @@ Reproduce the results in the report:
 
 ```
 cd ./src
-bash ./run.sh
+bash ./run-var.sh
+bash ./run-ga.sh
 ```
 
 > Note: The bash script will use "continue" mode to find the best solution. If you need to start from scratch, delete the `-c` parameter.

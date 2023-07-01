@@ -306,7 +306,7 @@ int calc_start_time(int current_time, const Port& port, const Ship& ship) {
 
 记种群数量为 $p$，船的数量为 $n$，锦标赛候选集大小为 $t$，则每轮迭代的时间复杂度为 $O(pn\log n + pt)$。
 
-这一整个过程都可以并行化，所以我们用多线程来加速。实测，在家用笔记本上可以取得 2 倍的加速比。
+这一整个过程都可以并行化，所以我们用多线程来加速。实测，在家用笔记本上可以取得 2 倍的加速比。不过在单核性能很强的服务器上，多线程反而会降低性能。
 
 ## Experiment results
 
@@ -314,7 +314,7 @@ int calc_start_time(int current_time, const Port& port, const Ship& ship) {
 
 ### Linear programming
 
-| dataset  | greedy model | model      | gap   | time limit (s) |
+| dataset  | greedy model | linear programming      | gap   | time limit (s) |
 | -------- | ------------ | ---------- | ----- | -------------- |
 | ships20  | 1380         | **950**    | 0%    | 5              |
 | ships40  | 19200        | **4440**   | 34.0% | 3600           |
@@ -323,8 +323,19 @@ int calc_start_time(int current_time, const Port& port, const Ship& ship) {
 
 > The visualization results of these datasets can be found in the appendix.
 
+### Genetic algorithm
+
+| dataset  | linear programming | genetic algorithm      | time cost (s) |
+| -------- | ------------ | ---------- | -------------- |
+| ships20  | **950**        | **950**    | 10              |
+| ships40  | **4440**        | 4570   | 220           |
+| ships80  | 32160        | **27430** | 600           |
+| ships160 | 297720       | **211260** | 900           |
+
 ## Appendix
-### Two ends version problem
+
+### Linear programming
+
 #### ships20
 
 <img src="imgs/two/plot-20.png" width="400" height="400">
@@ -340,3 +351,19 @@ int calc_start_time(int current_time, const Port& port, const Ship& ship) {
 #### ships160
 
 <img src="imgs/two/plot-160.png" width="400" height="400">
+
+### Genetic algorithm
+
+<img src="imgs/ga/plot-20.png" width="400" height="400">
+
+#### ships40
+
+<img src="imgs/ga/plot-40.png" width="400" height="400">
+
+#### ships80
+
+<img src="imgs/ga/plot-80.png" width="400" height="400">
+
+#### ships160
+
+<img src="imgs/ga/plot-160.png" width="400" height="400">
