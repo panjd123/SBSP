@@ -1,4 +1,4 @@
 .vscode
 pycache
-ga
+src/ga
 nohup.out
