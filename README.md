@@ -27,7 +27,8 @@ Reproduce the results in the report:
 ```
 cd ./src
 bash ./run-var.sh
+make
 bash ./run-ga.sh
 ```
 
-> Note: The bash script will use "continue" mode to find the best solution. If you need to start from scratch, delete the `-c` parameter.
+> Note: The `run-var.sh` script will use "continue" mode to find the best solution. If you need to start from scratch, delete the `-c` parameter.
