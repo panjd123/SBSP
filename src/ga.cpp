@@ -22,7 +22,7 @@ int population_size = 10000;
 int max_generation = 1000;
 int mutation_rate = 0.3;
 int mutation_num;
-int truncation_rate = 0.1;
+double truncation_rate = 0.1;
 int truncation_size;
 int tournament_size = 30;
 int cross_point_num = -1;
@@ -30,12 +30,25 @@ bool break_tag;
 int thread_num = 3;
 int round_num = 1;
 enum class SelectionMethod { Roulette,
-                             Tournament };
+                             Tournament,
+                             Truncation
+};
 SelectionMethod selection_method = SelectionMethod::Tournament;
 vector<vector<int>> available_ports_list;
 argparse::ArgumentParser parser("ga", "Genetic Algorithm");
-// output
-// port,arrival_time,start_time,id,delay_time
+
+double quick_power(double x, int p) {
+    double res = 1;
+    while (p) {
+        if (p & 1) {
+            res *= x;
+        }
+        x *= x;
+        p >>= 1;
+    }
+    return res;
+}
+
 struct Chromosome;
 int calc_fitness(const Chromosome& c);
 struct Chromosome {
@@ -51,6 +64,9 @@ struct Chromosome {
     }
     bool operator<(const Chromosome& rhs) const {
         return fitness < rhs.fitness;
+    }
+    bool operator>(const Chromosome& rhs) const {
+        return fitness > rhs.fitness;
     }
 };
 struct Port {
@@ -298,22 +314,15 @@ Chromosome genetic(vector<Chromosome>& population) {
                  << "\tbest: " << best.fitness
                  << "\tspeed: " << gen * population_size / duration.count() * 1000 << " it/s" << endl;
         }
-        double sum = 0;
-        int mx = 0;
         // roulette wheel selection
         vector<double> prob(population_size);
-        for (int i = 0; i < population_size; i++) {
-            sum += -population[i].fitness;
-            mx = max(mx, population[i].fitness);
-        }
-        sum += (double)mx * population_size;
-        for (int i = 0; i < population_size; i++) {
-            prob[i] = (mx - population[i].fitness) / sum;
-            prob[i] += (i == 0 ? 0 : prob[i - 1]);
-        }
         function<pair<int, int>(unsigned int*)> select;
 
         if (selection_method == SelectionMethod::Roulette) {
+            for (int i = 0; i < population_size; i++) {
+                prob[i] = quick_power((i + 1) / population_size, tournament_size);
+                cerr << prob[i] << endl;
+            }
             auto roulette_wheel_selection =
                 [&prob](unsigned int* seed) {
                     double r1 = (double)rand_r(seed) / RAND_MAX;
@@ -341,6 +350,15 @@ Chromosome genetic(vector<Chromosome>& population) {
                     return make_pair(parent1, parent2);
                 };
             select = tournament_selection;
+        } else if (selection_method == SelectionMethod::Truncation) {
+            nth_element(population.begin(), population.begin() + tournament_size, population.end());
+            auto truncation_selection =
+                [&population](unsigned int* seed) {
+                    int parent1 = rand_r(seed) % truncation_size;
+                    int parent2 = rand_r(seed) % truncation_size;
+                    return make_pair(parent1, parent2);
+                };
+            select = truncation_selection;
         }
 
         mutex m;
@@ -377,7 +395,7 @@ int main(int argc, char* argv[]) {
         .default_value(string("160"));
     parser.add_argument("-o", "--output")
         .help("output directory")
-        .default_value(string("../result/ga"));
+        .default_value(string("./test"));
     parser.add_argument("-p", "--population")
         .help("population size")
         .default_value(population_size)
@@ -386,10 +404,14 @@ int main(int argc, char* argv[]) {
         .help("generation size")
         .default_value(max_generation)
         .action([](const string& value) { max_generation = stoi(value); });
-    parser.add_argument("--tsize")
+    parser.add_argument("--toursize")
         .help("tournament size")
         .default_value(tournament_size)
         .action([](const string& value) { tournament_size = stoi(value); });
+    parser.add_argument("--truncrate")
+        .help("truncation rate")
+        .default_value(truncation_rate)
+        .action([](const string& value) { truncation_rate = stod(value); });
     parser.add_argument("-c", "--cpnum")
         .help("cross point num")
         .default_value(cross_point_num)
@@ -422,6 +444,7 @@ int main(int argc, char* argv[]) {
     string output_dir = parser.get<string>("--output");
     string output_path = output_dir + "/output-" + dataset + ".csv";
     ship_num = stoi(dataset);
+    truncation_size = truncation_rate * population_size;
     ships.resize(ship_num);
     ports.resize(port_num);
     FILE* fp = fopen(dataset_path.c_str(), "r");

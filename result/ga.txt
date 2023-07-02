@@ -1,40 +1,80 @@
 dataset: 20
 population: 1000
 generation: 100
-tournament size: 50
+tournament size: 30
 cross point num: -1
 mutation rate: 0
-thread num: 1
-selection method: tournament
+thread num: 20
+selection method: roulette
+round: 30
+best fitness: 950
+dataset: 20
+population: 1000
+generation: 100
+tournament size: 30
+cross point num: -1
+mutation rate: 0
+thread num: 20
+selection method: roulette
+round: 30
+best fitness: 960
+dataset: 40
+population: 30000
+generation: 80
+tournament size: 30
+cross point num: -1
+mutation rate: 0
+thread num: 20
+selection method: roulette
+round: 4000
+best fitness: 5050
+dataset: 20
+population: 1000
+generation: 100
+tournament size: 30
+cross point num: -1
+mutation rate: 0
+thread num: 20
+selection method: roulette
 round: 30
 best fitness: 950
 dataset: 40
-population: 10000
-generation: 100
-tournament size: 50
+population: 30000
+generation: 80
+tournament size: 30
 cross point num: -1
 mutation rate: 0
-thread num: 1
-selection method: tournament
-round: 100
-best fitness: 4570
+thread num: 20
+selection method: roulette
+round: 4000
+best fitness: 4450
 dataset: 80
-population: 20000
-generation: 100
-tournament size: 200
+population: 30000
+generation: 400
+tournament size: 30
 cross point num: -1
 mutation rate: 0
-thread num: 1
-selection method: tournament
-round: 50
-best fitness: 27430
+thread num: 20
+selection method: roulette
+round: 200
+best fitness: 22980
 dataset: 160
 population: 30000
-generation: 100
-tournament size: 250
+generation: 1000
+tournament size: 30
 cross point num: -1
 mutation rate: 0
-thread num: 1
-selection method: tournament
-round: 30
-best fitness: 211260
+thread num: 20
+selection method: roulette
+round: 80
+best fitness: 212860
+dataset: 160
+population: 30000
+generation: 300
+tournament size: 30
+cross point num: -1
+mutation rate: 0
+thread num: 20
+selection method: roulette
+round: 3
+best fitness: 207900

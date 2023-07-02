@@ -3,11 +3,13 @@
 潘俊达 2021201626
 
 > 简介：本实验使用了3种方法，分别是贪心，线性规划，多线程遗传算法。分别是用 python, gurobipy, c++ 实现的。
-> 
+>
 > 实验结果：对于 ships20，线性规划能快速求得最优解，遗传算法经过一段时间也可以得到最优解，但没有线性规划的最优性保证。
 > 对于 ships40 线性规划在时间代价下能取得更好的效果，对于 ships80,160，遗传算法能取得更好的效果。
 >
-> 在 5 月份，我完成了一份基于线性规划和分段线性函数的版本，彼时的问题假设是全时间段要满足水深。在 6 月底，完成了对线性规划版本的重要改进，并补充了遗传算法版本。因为篇幅原因，5 月份的版本和全时段水深的问题的结果，不在本文档中展示。可见 report_old.pdf。
+> 在 5 月份，我完成了一份基于线性规划和分段线性函数的版本，彼时的问题假设是全时间段要满足水深。在 6 月底，完成了对线性规划版本的重要改进，并补充了遗传算法版本，改写了问题条件即改成只要进出港的时候满足。
+>
+> 因为篇幅原因，5 月份的版本和全时段水深的问题的结果，不在本文档中展示。可见 report_old.pdf 或 result 文件夹。
 
 ## Linear Programming Model
 
@@ -219,7 +221,7 @@ Essentially, the above process can be seen as manually implementing piecewise li
 
 ## Genetic algorithm
 
-> 时间关系，这里用中文写报告
+> 时间关系，这里用中文
 
 ### 编码与适应度计算
 
@@ -285,10 +287,31 @@ int calc_start_time(int current_time, const Port& port, const Ship& ship) {
 
 于是，对于一个个体，利用其基因，加上排序优先级，就可以 $O(n\log n)$ 地计算出适应度，或者是总推迟时间。
 
+这里，适应度用 $M - \text{delay}$ 表示，$M$ 是为了使结果非负的一个数。在轮盘赌中有具体的用法。
+
 ### 选择
 
-实现了两种选择方式，一种是轮盘赌，一种是锦标赛。经过测试，轮盘赌的概率函数并不容易写好。锦标赛的超参更容易调整。而且取得了
-非常好的效果。
+实现了三种选择方式，截断，轮盘赌，锦标赛。
+
+实测，最简单的截断取得了最好的效果，大概率是因为其更好地搜索了设计空间，但其实三者差异不大，锦标赛如果设置合理可以更快收敛到相近水平。
+
+不妨碍来看看其他两种选择方式：
+
+锦标赛的超参很容易调整，而且也能取得了很好的效果。但缺点是如果模拟锦标赛，复杂度和候选集大小成正比。
+
+而轮盘赌算法，最初，我采用 $\max(\text{delay}) - \text{delay}_i$ 作为适应度，用 $\frac{\text{fitness}}{\sum\text{fitness}}$ 作为选中概率，但是效果并不佳，远不及锦标赛。在考虑如何设置概率函数时，一开始我考虑进行指数变换，但是发现比较难调整参数，最后我受到了锦标赛的启发：
+
+考虑到如果候选集大小 $t$ 固定，那么锦标赛中每个个体的选中概率可以被事先计算出来，从而可以用轮盘赌的方式来实现锦标赛，而且获得更好的时间复杂度。
+
+具体计算如下：考虑排名为 $d$ 的个体 $i$，种群数量为 $p$，则有：
+
+$$
+\mathbb{P}(\text{i is selected}) = (\frac{p-d}{p})^t - (\frac{p-d-1}{p})^t \quad {t \geq 2}
+$$
+
+这样的概率函数，不受目标函数值的影响，具有更好的鲁棒性。
+
+最后，选择了截断法，实现时用 `nth_element` 来实现，该部分复杂度为 $O(p)$。
 
 ### 交叉和变异
 
@@ -296,41 +319,71 @@ int calc_start_time(int current_time, const Port& port, const Ship& ship) {
 
 对于优先级，这相当于一个全排列，所以用 OX 交叉和交换变异。
 
-对于港口，这相当于一个子集，所以用 n 点交叉或均匀交叉和随机变异。
+对于港口，用 n 点交叉或均匀交叉和随机变异。
 
 实测，均匀交叉能更好地搜索设计空间，取得更好的效果。
 
-> 均匀交叉即每个点以 0.5 的概率来自双亲。
+> 均匀交叉即每个点以相同的概率来自双亲。
 
 ### 多线程优化
 
-记种群数量为 $p$，船的数量为 $n$，锦标赛候选集大小为 $t$，则每轮迭代的时间复杂度为 $O(pn\log n + pt)$。
+记种群数量为 $p$，船的数量为 $n$，则每轮迭代的时间复杂度为 $O(pn\log n)$。
 
-这一整个过程都可以并行化，所以我们用多线程来加速。实测，在家用笔记本上可以取得 2 倍的加速比。不过在单核性能很强的服务器上，多线程反而会降低性能。
+这一整个过程都可以并行化，所以我们用多线程来加速。实测，在家用笔记本上可以取得 2 倍的加速比。在 20 核服务器上，可以达到至高 7 倍的加速比。效果显著。
+
+### 实现细节
+
+经过测试，除了上文提到的锦标赛优于轮盘赌，均匀交叉优于n点交叉，我还测试了变异比例取 0.1 到 0.3，结果表明影响不大。影响最大的参数是种群数量和锦标赛候选集大小。以下是实验采用的具体参数。
+
+| dataset | population size | truncation size | round |
+| ------- | --------------- | --------------- | ----- |
+| 20      | 1000            | 100              | 30    |
+| 40      | 30000           | 600              | 4000    |
+| 80      | 30000           | 600              | 200    |
+| 160      | 30000           | 600              | 80    |
+
+对于每个数据集，遗传算法会被执行 round 轮取最好的结果。
+
+> 为了验证遗传算法和线性规划在 ships40 上的表现，ships40 的执行时间被刻意延迟到相同水平。80/160 则保持1小时。
+> 
+> 另外，为了体现遗传算法的时间优越性，我们还做了较短时间的实验（轮数远小于以上水平），结果也比线性规划好，具体结果见下一节。
 
 ## Experiment results
 
 > Only show two ends version problem's results.
+>
+> Both algorithms run in parallel with 20 cores on the same server.
+>
+> CPU: 12th Gen Intel(R) Core(TM) i7-12700K @ 3.60GHz
 
 ### Linear programming
 
-| dataset  | greedy model | linear programming      | gap   | time limit (s) |
+| dataset  | greedy algorithm | linear programming*     | gap   | time limit (s) |
 | -------- | ------------ | ---------- | ----- | -------------- |
 | ships20  | 1380         | **950**    | 0%    | 5              |
 | ships40  | 19200        | **4440**   | 34.0% | 3600           |
 | ships80  | 39740        | **32160**  | 89.0% | 4800           |
 | ships160 | 446736       | **297720** | 96%   | 7200           |
 
-> The visualization results of these datasets can be found in the appendix.
+> The visualization results can be found in the appendix.
 
 ### Genetic algorithm
 
-| dataset  | linear programming | genetic algorithm      | time cost (s) |
+| dataset  | linear programming | genetic algorithm (mini round)     | time cost (s) |
 | -------- | ------------ | ---------- | -------------- |
-| ships20  | **950**        | **950**    | 10              |
-| ships40  | **4440**        | 4570   | 220           |
-| ships80  | 32160        | **27430** | 600           |
-| ships160 | 297720       | **211260** | 900           |
+| ships20  | **950**        | **950**    | 1              |
+| ships40  | **4440**        | 4570   | 50           |
+| ships80  | 32160        | **27430** | 100           |
+| ships160 | 297720       | **211260** | 300           |
+
+| dataset  | linear programming | genetic algorithm*     | time cost (s) |
+| -------- | ------------ | ---------- | -------------- |
+| ships20  | **950**        | **950**    | 1              |
+| ships40  | **4440**        | 4450   | 3600           |
+| ships80  | 32160        | **22980** | 100           |
+| ships160 | 297720       | **207900** | 300           |
+
+> It can be seen that there is no big gap between Linear programming and genetic algorithm for the problem of moderate scale, and Linear programming can ensure the optimality of the results. But for large-scale problems, genetic algorithms have achieved significant advantages.
 
 ## Appendix
 
