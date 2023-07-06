@@ -2,6 +2,8 @@
 
 RUC "Operations Research: Modeling and Algorithms 2023" Project
 
+<img src="result/ga/plot-160.png" width=50%>
+
 ## Problem Description
 
 [doc/运筹学大作业.pdf](doc/%E8%BF%90%E7%AD%B9%E5%AD%A6%E5%A4%A7%E4%BD%9C%E4%B8%9A.pdf)
